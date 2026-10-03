@@ -1,16 +1,7 @@
 <script setup lang="ts">
-import { watch } from 'vue';
 import { store, createRoom, joinRoom } from '../store';
 
-// 房码输入自动转大写
-watch(
-  () => store.joinCode,
-  (v) => {
-    const up = v.toUpperCase();
-    if (up !== v) store.joinCode = up;
-  },
-);
-const codeOk = () => /^[A-Z2-9]{6}$/.test(store.joinCode.trim());
+const codeOk = () => /^\d{6}$/.test(store.joinCode.trim());
 </script>
 
 <template>
@@ -30,15 +21,16 @@ const codeOk = () => /^[A-Z2-9]{6}$/.test(store.joinCode.trim());
         placeholder="给自己起个名字"
         @keyup.enter="store.joinCode ? joinRoom() : createRoom()"
       />
-      <label>房码(加入时填写,留空则创建新局)</label>
+      <label>房号(加入时填写,留空则创建新局)</label>
       <input
         v-model="store.joinCode"
         maxlength="6"
         class="code"
         autocomplete="off"
-        autocapitalize="characters"
+        inputmode="numeric"
+        pattern="[0-9]*"
         spellcheck="false"
-        placeholder="6 位房码"
+        placeholder="6 位数字房号"
         @keyup.enter="codeOk() && joinRoom()"
       />
       <div class="btns">

@@ -96,6 +96,7 @@ export class JieqiGame {
     const dst = this.board[to];
     const capture = !!dst;
     const capturedType = dst?.trueType;
+    const prevNoCapture = this.noCapturePlies;
     this.board[to] = p;
     this.board[from] = null;
     if (reveal !== undefined) p.revealed = true; // 动子即揭
@@ -107,7 +108,7 @@ export class JieqiGame {
     const check = inCheck(this.board, this.turn);
     const key = posKey(this.board, this.turn);
     this.bump(key);
-    const rec = { by: p.side, from, to, capture, reveal, check, key };
+    const rec = { by: p.side, from, to, capture, capturedType, reveal, check, prevNoCapture, key };
     this.history.push(rec);
 
     let result: GameResult | undefined;
@@ -123,6 +124,29 @@ export class JieqiGame {
       this.result = result;
     }
     return { by: rec.by, from, to, capture, capturedType, reveal, check, result };
+  }
+
+  /**
+   * 悔棋:撤销最后一着(仅对局中)。
+   * 揭棋约定:翻开的身份不回收,被吃恢复的子因身份已公开也恢复为明子。
+   */
+  undoLast(): boolean {
+    if (this.status !== 'playing') return false;
+    const last = this.history.pop();
+    if (!last) return false;
+    const mover = this.board[last.to]!;
+    this.board[last.from] = mover;
+    this.board[last.to] = null;
+    if (last.capturedType) {
+      this.board[last.to] = { side: other(last.by), trueType: last.capturedType, revealed: true };
+    }
+    this.turn = last.by;
+    this.ply -= 1;
+    this.noCapturePlies = last.prevNoCapture;
+    const c = this.counts.get(last.key) ?? 0;
+    if (c <= 1) this.counts.delete(last.key);
+    else this.counts.set(last.key, c - 1);
+    return true;
   }
 }
 

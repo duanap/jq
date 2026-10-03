@@ -28,6 +28,10 @@ export interface GameState {
   clocks: Clocks | null;
   /** 双方吃子清单:red = 红方吃到的(黑子),black = 黑方吃到的(红子) */
   captured: { red: PieceType[]; black: PieceType[] };
+  /** 房主(唯一可解散)所在一方 */
+  owner: Side;
+  /** 待处理的悔棋请求方 */
+  pendingUndo?: Side;
   drawOffer?: Side;
   rematch: { red: boolean; black: boolean };
   result?: GameResult;
@@ -43,6 +47,11 @@ export type ClientMsg =
   | { t: 'draw_offer' }
   | { t: 'draw_accept' }
   | { t: 'draw_decline' }
+  | { t: 'undo_request' }
+  | { t: 'undo_accept' }
+  | { t: 'undo_decline' }
+  | { t: 'leave' }
+  | { t: 'dissolve' }
   | { t: 'rematch' }
   | { t: 'ping' };
 

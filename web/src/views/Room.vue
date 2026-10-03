@@ -7,6 +7,7 @@ import Board from '../components/Board.vue';
 const st = computed(() => store.state);
 const you = computed(() => store.you);
 const link = computed(() => `${location.origin}/?r=${store.room}`);
+const menuOpen = ref(false);
 
 function copyText(text: string, ok: string) {
   navigator.clipboard
@@ -17,7 +18,7 @@ function copyLink() {
   copyText(link.value, '链接已复制,发给朋友吧');
 }
 function copyCode() {
-  copyText(store.room, '房码已复制');
+  copyText(store.room, '房号已复制');
 }
 function onMove(from: number, to: number) {
   net.send({ t: 'move', from, to });
@@ -43,26 +44,6 @@ const myClock = computed(() => {
   const s = st.value;
   if (!s?.clocks || !you.value) return undefined;
   return you.value === 'red' ? s.clocks.red : s.clocks.black;
-});
-
-/** 居中醒目状态条:文案 + 配色 + 是否脉冲 */
-const stateInfo = computed(() => {
-  const s = st.value;
-  if (!s) return { text: '', tone: 'idle', pulse: false };
-  if (s.phase === 'waiting') return { text: '等待对手加入…', tone: 'idle', pulse: true };
-  if (s.phase === 'over')
-    return { text: resultText.value || '对局结束', tone: resultTone.value, pulse: false };
-  if (s.drawOffer && s.drawOffer !== you.value)
-    return { text: '对方请求和棋', tone: 'notice', pulse: true };
-  if (s.drawOffer === you.value)
-    return { text: '已请求和棋,等待对方…', tone: 'idle', pulse: false };
-  if (s.turn === you.value)
-    return s.check
-      ? { text: '轮到你 · 将军!', tone: 'danger', pulse: true }
-      : { text: '轮到你走子', tone: 'myturn', pulse: false };
-  return s.check
-    ? { text: '对方被将军', tone: 'danger', pulse: false }
-    : { text: '等待对方走子…', tone: 'idle', pulse: false };
 });
 
 const resultText = computed(() => {
@@ -96,6 +77,10 @@ const iVoted = computed(() => {
   const s = st.value;
   if (!s || !you.value) return false;
   return s.rematch[you.value];
+});
+const rematchLabel = computed(() => {
+  if (iVoted.value) return '等待对方同意…';
+  return rematchCount.value ? `再来一局(${rematchCount.value}/2)` : '再来一局';
 });
 
 // 对手掉线倒计时(与服务端 60s 宽限一致)
@@ -132,31 +117,87 @@ const closeLeft = computed(() => {
   return m > 0 ? `${m} 分 ${sec} 秒` : `${sec} 秒`;
 });
 
+// ---------- 房主/退出/解散 ----------
+const isOwner = computed(() => {
+  const s = st.value;
+  return !!s && !!you.value && s.owner === you.value;
+});
+function exitRoom() {
+  if (isOwner.value) {
+    if (confirm('解散房间?所有对局将结束。')) {
+      net.send({ t: 'dissolve' });
+      setTimeout(() => {
+        if (store.screen === 'room') leaveRoom();
+      }, 1500);
+    }
+    return;
+  }
+  const playing = st.value?.phase === 'playing';
+  if (playing && !confirm('退出将视为认输,确定退出?')) return;
+  net.send({ t: 'leave' });
+  setTimeout(() => {
+    if (store.screen === 'room') leaveRoom();
+  }, 200);
+}
 function resign() {
   if (confirm('确定认输?')) net.send({ t: 'resign' });
 }
-function oppName() {
-  const o = seatOf('opp');
-  return o ? o.nick : '等待中…';
+
+// ---------- 悔棋 ----------
+const undoDisabled = computed(() => {
+  const s = st.value;
+  if (!s || !you.value) return true;
+  if (s.phase !== 'playing' || s.moveNum === 0) return true;
+  if (s.pendingUndo) return true;
+  return s.turn === you.value; // 自己是最后一着 = 对方还没回手
+});
+const undoLabel = computed(() => (st.value?.pendingUndo === you.value ? '等待对方同意…' : '悔棋'));
+function onUndo() {
+  net.send({ t: 'undo_request' });
+  menuOpen.value = false;
 }
 </script>
 
 <template>
   <div class="room" v-if="st">
     <header>
-      <button class="ghost" @click="leaveRoom">← 退出</button>
-      <div class="code">房码 <b>{{ store.room }}</b></div>
-      <button class="ghost" @click="copyLink">复制邀请</button>
+      <button class="ghost" @click="exitRoom">{{ isOwner ? '解散' : '退出' }}</button>
+      <div class="code">房号 <b>{{ store.room }}</b></div>
+      <div class="menu-wrap">
+        <button class="ghost" @click="menuOpen = !menuOpen">更多 ▾</button>
+        <div class="menu" v-if="menuOpen">
+          <template v-if="st.phase === 'playing'">
+            <button :disabled="undoDisabled" @click="onUndo">{{ undoLabel }}</button>
+            <button :disabled="!!st.drawOffer" @click="net.send({ t: 'draw_offer' }); menuOpen = false">
+              {{ st.drawOffer === you ? '已请求和棋…' : '求和' }}
+            </button>
+            <button class="danger" @click="resign(); menuOpen = false">认输</button>
+          </template>
+          <template v-else>
+            <button @click="copyLink(); menuOpen = false">复制邀请链接</button>
+            <span class="menu-empty">对局开始后可使用悔棋 / 求和 / 认输</span>
+          </template>
+        </div>
+        <div class="menu-mask" v-if="menuOpen" @click="menuOpen = false"></div>
+      </div>
     </header>
 
     <div class="bar">
-      <span class="seat"><i class="pind" :class="{ ok: oppOnline }"></i>{{ oppName() }}</span>
+      <span class="seat"><i class="pind" :class="{ ok: oppOnline }"></i>{{ seatOf('opp')?.nick ?? '等待中…' }}</span>
       <span v-if="st.clocks && st.phase !== 'waiting'" class="clock" :class="{ act: st.turn !== you && st.phase === 'playing' }">{{ fmt(oppClock) }}</span>
     </div>
 
-    <div class="state" :class="[stateInfo.tone, { pulse: stateInfo.pulse }]">{{ stateInfo.text }}</div>
-
     <div class="warn" v-if="st.phase === 'playing' && !oppOnline">⚠ 对方掉线 · {{ abandonText }}</div>
+    <div class="pend" v-if="st.pendingUndo && st.pendingUndo !== you">
+      对方请求悔棋
+      <button @click="net.send({ t: 'undo_accept' });">同意</button>
+      <button @click="net.send({ t: 'undo_decline' })">拒绝</button>
+    </div>
+    <div class="pend" v-if="st.drawOffer && st.drawOffer !== you">
+      对方请求和棋
+      <button @click="net.send({ t: 'draw_accept' })">同意</button>
+      <button @click="net.send({ t: 'draw_decline' })">拒绝</button>
+    </div>
 
     <Board :state="st" :you="you" @move="onMove" />
 
@@ -166,43 +207,40 @@ function oppName() {
       <span v-if="st.clocks && st.phase !== 'waiting'" class="clock" :class="{ act: st.turn === you && st.phase === 'playing' }">{{ fmt(myClock) }}</span>
     </div>
 
-    <div class="actions" v-if="st.phase === 'playing'">
-      <template v-if="st.drawOffer && st.drawOffer !== you">
-        <button class="primary" @click="net.send({ t: 'draw_accept' })">接受和棋</button>
-        <button @click="net.send({ t: 'draw_decline' })">拒绝</button>
-      </template>
-      <template v-else>
-        <button @click="net.send({ t: 'draw_offer' })">求和</button>
-        <button class="danger" @click="resign">认输</button>
-      </template>
-    </div>
-    <div class="actions" v-else-if="st.phase === 'over'">
-      <button class="primary" :disabled="iVoted" @click="net.send({ t: 'rematch' })">
-        {{ iVoted ? '等待对方同意…' : '再来一局' }}{{ rematchCount && !iVoted ? `(${rematchCount}/2)` : '' }}
-      </button>
-      <button @click="leaveRoom">回主页</button>
-    </div>
-    <div class="closehint" v-if="st.phase === 'over' && closeLeft">房间将在 {{ closeLeft }} 后自动解散,点"再来一局"继续保留</div>
-    <div class="actions" v-else>
-      <span class="hint">把房码或邀请链接发给对手,加入即开局</span>
+    <div class="actions" v-if="st.phase === 'waiting'">
+      <span class="hint">把 6 位数字房号或邀请链接发给对手,加入即开局</span>
     </div>
 
     <div v-if="st.phase === 'waiting'" class="overlay">
       <div class="card">
         <div class="big">{{ store.room }}</div>
-        <p>把房码或链接发给对手,对方加入即开局</p>
+        <p>把数字房号或链接发给对手,对方加入即开局</p>
         <div class="linkrow">
           <input readonly :value="link" @focus="($event.target as HTMLInputElement).select()" />
           <button @click="copyLink">复制链接</button>
         </div>
         <div class="linkrow">
           <input readonly :value="store.room" @focus="($event.target as HTMLInputElement).select()" />
-          <button @click="copyCode">复制房码</button>
+          <button @click="copyCode">复制房号</button>
         </div>
         <div class="wait">等待对手加入…</div>
         <div class="ttl" v-if="closeLeft">房间将在 {{ closeLeft }} 后无人加入自动解散</div>
       </div>
     </div>
+
+    <transition name="fade">
+      <div v-if="st.phase === 'over'" class="overlay result-ov">
+        <div class="result-card">
+          <div class="result-title" :class="resultTone">{{ resultText }}</div>
+          <div class="result-sub">本局共 {{ st.moveNum }} 步</div>
+          <div class="result-btns">
+            <button class="primary" :disabled="iVoted" @click="net.send({ t: 'rematch' })">{{ rematchLabel }}</button>
+            <button @click="leaveRoom">回主页</button>
+          </div>
+          <div class="ttl" v-if="closeLeft">房间将在 {{ closeLeft }} 后自动解散,点"再来一局"继续保留</div>
+        </div>
+      </div>
+    </transition>
   </div>
 </template>
 
@@ -214,15 +252,13 @@ function oppName() {
   flex-direction: column;
   min-height: 100vh;
 }
-/* 对局区在视口剩余空间内垂直居中:顶部栏固定,棋盘整体下移 */
-:deep(.board-wrap) {
-  margin-top: auto;
-}
 header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 8px 10px;
+  position: relative;
+  z-index: 30;
 }
 .code {
   font-size: 14px;
@@ -232,6 +268,44 @@ header {
   color: #e8e4da;
   letter-spacing: 2px;
   font-size: 16px;
+}
+.menu-wrap {
+  position: relative;
+}
+.menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  background: #1d2432;
+  border: 1px solid #2a3346;
+  border-radius: 12px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 150px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  z-index: 40;
+}
+.menu button {
+  text-align: left;
+  background: transparent;
+  border-color: transparent;
+}
+.menu button:hover:not(:disabled) {
+  background: #232b3a;
+}
+.menu .menu-empty {
+  display: block;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: #8a94a8;
+  max-width: 190px;
+}
+.menu-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 25;
 }
 .bar {
   display: flex;
@@ -248,51 +322,6 @@ header {
 .seat.turn {
   color: #d9a514;
   font-weight: 700;
-}
-.state {
-  margin: 2px 10px;
-  padding: 8px 14px;
-  border-radius: 999px;
-  text-align: center;
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: 1px;
-  border: 1px solid #2a3346;
-  background: #1d2432;
-  color: #9aa5b8;
-}
-.state.myturn {
-  background: #322a12;
-  border-color: #6b5316;
-  color: #e8c15a;
-}
-.state.danger {
-  background: #341a1c;
-  border-color: #5f3134;
-  color: #ff9d94;
-}
-.state.notice {
-  background: #14262f;
-  border-color: #2b5566;
-  color: #7cc7de;
-}
-.state.win {
-  background: #16301f;
-  border-color: #2c5a3a;
-  color: #6fd598;
-}
-.state.lose {
-  background: #341a1c;
-  border-color: #5f3134;
-  color: #e58a8a;
-}
-.state.draw {
-  background: #322a12;
-  border-color: #6b5316;
-  color: #e8c15a;
-}
-.state.pulse {
-  animation: pulse 1.6s ease-in-out infinite;
 }
 .connstate {
   color: #8a94a8;
@@ -312,16 +341,32 @@ header {
   color: #e8e4da;
   font-weight: 700;
 }
-.warn {
-  margin: 2px 10px 0;
+.warn,
+.pend {
+  margin: 2px 10px;
   padding: 7px 12px;
-  border: 1px solid #6b5316;
-  background: #322a12;
-  color: #e8c15a;
   border-radius: 10px;
   font-size: 13px;
   text-align: center;
+}
+.warn {
+  border: 1px solid #6b5316;
+  background: #322a12;
+  color: #e8c15a;
   animation: pulse 1.6s ease-in-out infinite;
+}
+.pend {
+  border: 1px solid #2b5566;
+  background: #14262f;
+  color: #7cc7de;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+.pend button {
+  padding: 4px 12px;
+  font-size: 12px;
 }
 .actions {
   display: flex;
@@ -335,6 +380,9 @@ header {
   font-size: 13px;
   align-self: center;
 }
+.closehint {
+  min-height: 1px;
+}
 .overlay {
   position: fixed;
   inset: 0;
@@ -343,27 +391,57 @@ header {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 10;
+  z-index: 50;
+  animation: fadein 0.35s ease;
 }
-.card {
+@keyframes fadein {
+  from {
+    opacity: 0;
+  }
+}
+.result-card {
   background: #1d2432;
   border: 1px solid #2a3346;
   border-radius: 16px;
-  padding: 26px 30px;
+  padding: 28px 32px;
   width: min(90vw, 400px);
   text-align: center;
+  animation: popin 0.45s cubic-bezier(0.2, 1.4, 0.4, 1);
 }
-.card .big {
-  font-size: 44px;
-  letter-spacing: 10px;
+@keyframes popin {
+  0% {
+    transform: scale(0.7);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+.result-title {
+  font-size: 26px;
   font-weight: 800;
-  color: #d9a514;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
-.card p {
-  color: #9aa5b8;
+.result-title.win {
+  color: #6fd598;
+  text-shadow: 0 0 18px rgba(111, 213, 152, 0.45);
+}
+.result-title.lose {
+  color: #e58a8a;
+}
+.result-title.draw {
+  color: #e8c15a;
+}
+.result-sub {
+  color: #8a94a8;
   font-size: 13px;
-  margin-bottom: 14px;
+  margin-bottom: 18px;
+}
+.result-btns {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
 }
 .linkrow {
   display: flex;
@@ -380,16 +458,21 @@ header {
   animation: pulse 1.6s ease-in-out infinite;
 }
 .ttl {
-  margin-top: 6px;
+  margin-top: 8px;
   color: #6b7280;
   font-size: 12px;
 }
-.closehint {
-  margin: -6px 10px 0;
-  padding: 0 12px 4px;
-  color: #8a94a8;
-  font-size: 12px;
-  text-align: center;
+.card .big {
+  font-size: 44px;
+  letter-spacing: 10px;
+  font-weight: 800;
+  color: #d9a514;
+  margin-bottom: 8px;
+}
+.card p {
+  color: #9aa5b8;
+  font-size: 13px;
+  margin-bottom: 14px;
 }
 @keyframes pulse {
   50% {

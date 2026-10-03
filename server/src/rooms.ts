@@ -3,12 +3,11 @@ import type { TimeOpts } from '@jieqi/shared';
 import { Room } from './room';
 
 const rooms = new Map<string, Room>();
-const ALPHA = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // 去掉易混淆的 I L O 0 1
 
 export function createRoom(opts: TimeOpts): Room {
   for (;;) {
     let code = '';
-    for (let i = 0; i < 6; i++) code += ALPHA[randomInt(ALPHA.length)];
+    for (let i = 0; i < 6; i++) code += String(randomInt(10)); // 6 位数字房号
     if (!rooms.has(code)) {
       const r = new Room(code, opts);
       rooms.set(code, r);
@@ -19,6 +18,7 @@ export function createRoom(opts: TimeOpts): Room {
 
 export const getRoom = (code: string) => rooms.get(code);
 export const allRooms = (): Room[] => [...rooms.values()];
+export const removeRoom = (code: string) => rooms.delete(code);
 
 /** 房间生命周期清扫:到期的广播解散并删除;对局中僵死兜底 */
 export function sweepExpired(now: number) {

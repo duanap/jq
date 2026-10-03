@@ -31,11 +31,11 @@ export function createRoom() {
 
 export function joinRoom() {
   const nick = store.nick.trim();
-  const code = store.joinCode.trim().toUpperCase();
+  const code = store.joinCode.trim();
   // 本地已有该房间的 token:优先走恢复(服务端 token 不匹配才会按新玩家入座)
   const token = localStorage.getItem('jieqi.token.' + code) ?? undefined;
   if (!nick && !token) return showToast('先填个昵称');
-  if (!/^[A-Z2-9]{6}$/.test(code)) return showToast('房码是 6 位字母数字');
+  if (!/^\d{6}$/.test(code)) return showToast('房号是 6 位数字');
   if (nick) localStorage.setItem('jieqi.nick', nick);
   net.send({ t: 'join', room: code, nick: nick || undefined, token });
 }
@@ -98,8 +98,8 @@ export function applyServerMsg(m: ServerMsg) {
       store.state = m.state;
       break;
     case 'closed': {
-      // 服务端解散房间(生命周期到期):清记录回主页
-      showToast(m.reason === 'expired' ? '房间已解散(超时无活动)' : '房间已解散');
+      // 服务端解散房间(生命周期到期/房主解散):清记录回主页
+      showToast(m.reason === 'dissolved' ? '房间已解散' : '房间已解散(超时无活动)');
       localStorage.removeItem('jieqi.last');
       localStorage.removeItem('jieqi.token.' + store.room);
       store.autoJoin = '';

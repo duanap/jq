@@ -231,6 +231,57 @@ async function main() {
   ok(revealedCount === 2, '新对局重新洗子(只剩两枚明帅/将)');
   ok(ns.you === 'red', '原黑方重开后执红(换先)');
 
+  console.log('— 悔棋(对方同意后回滚)—');
+  const u1 = await Client.connect();
+  u1.send({ t: 'create', nick: '悔棋甲', opts: { baseMin: 1, incSec: 0 } });
+  const ju1 = (await u1.next((m) => m.t === 'joined')) as Extract<ServerMsg, { t: 'joined' }>;
+  ok(/^\d{6}$/.test(ju1.room), `房号为 6 位数字(${ju1.room})`);
+  const u2 = await Client.connect();
+  u2.send({ t: 'join', room: ju1.room, nick: '悔棋乙' });
+  await u2.next((m) => m.t === 'joined');
+  {
+    const board = boardFromView(ju1.state.cells);
+    let mv: [number, number] | null = null;
+    for (let i = 0; i < 90 && !mv; i++) {
+      const ts = legalTargets(board, 'red', i);
+      if (ts.length) mv = [i, ts[0]!];
+    }
+    u1.send({ t: 'move', from: mv![0], to: mv![1] });
+    await u1.next((m) => m.t === 'state' && m.state.moveNum === 1);
+    await u2.next((m) => m.t === 'state' && m.state.moveNum === 1);
+  }
+  u1.send({ t: 'undo_request' });
+  const pu = (await u2.next((m) => m.t === 'state' && m.state.pendingUndo === 'red')) as Extract<ServerMsg, { t: 'state' }>;
+  ok(pu.state.pendingUndo === 'red', '悔棋请求已送达对方');
+  u2.send({ t: 'undo_accept' });
+  const au = (await u1.next((m) => m.t === 'state' && m.state.moveNum === 0)) as Extract<ServerMsg, { t: 'state' }>;
+  ok(au.state.moveNum === 0 && au.state.turn === 'red', '悔棋后回到初始局面、红方重走');
+  await u2.next((m) => m.t === 'state' && m.state.moveNum === 0);
+  u1.drain();
+  u2.drain();
+
+  console.log('— 房主解散 / 权限校验 —');
+  u1.send({ t: 'dissolve' });
+  const cl1 = (await u1.next((m) => m.t === 'closed')) as Extract<ServerMsg, { t: 'closed' }>;
+  const cl2 = (await u2.next((m) => m.t === 'closed')) as Extract<ServerMsg, { t: 'closed' }>;
+  ok(cl1.reason === 'dissolved' && cl2.reason === 'dissolved', '双方收到解散广播');
+
+  const w1 = await Client.connect();
+  w1.send({ t: 'create', nick: '退出甲' });
+  const jw1 = (await w1.next((m) => m.t === 'joined')) as Extract<ServerMsg, { t: 'joined' }>;
+  const w2 = await Client.connect();
+  w2.send({ t: 'join', room: jw1.room, nick: '退出乙' });
+  await w2.next((m) => m.t === 'joined');
+  w2.send({ t: 'dissolve' });
+  const de = (await w2.next((m) => m.t === 'error')) as Extract<ServerMsg, { t: 'error' }>;
+  ok(de.code === 'not_owner', '非房主解散被拒');
+  w2.send({ t: 'leave' });
+  const lw = (await w1.next((m) => m.t === 'state' && m.state.phase === 'over')) as Extract<ServerMsg, { t: 'state' }>;
+  ok(
+    lw.state.result?.reason === 'resign' && lw.state.result.winner === 'red' && lw.state.seats.black === null,
+    '对局中退出视为认输,座位移除',
+  );
+
   console.log(`\n结果:通过 ${pass} 项,失败 ${fails.length} 项`);
   if (fails.length) console.error('失败项:', fails);
   child.kill();

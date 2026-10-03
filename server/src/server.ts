@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { ClientMsg, TimeOpts } from '@jieqi/shared';
-import { allRooms, createRoom, getRoom, sweepExpired } from './rooms';
+import { allRooms, createRoom, getRoom, removeRoom, sweepExpired } from './rooms';
 import type { Room } from './room';
 import { CLOCK_TICK_MS, HB_INTERVAL_MS, PORT } from './config';
 import { sendWS } from './send';
@@ -122,6 +122,7 @@ function handle(ws: WebSocket, msg: ClientMsg) {
     case 'create': {
       const room = createRoom(sanitizeOpts(m.opts));
       const seat = room.newSeat('red', sanitizeNick(m.nick));
+      seat.isOwner = true;
       room.seats.red = seat;
       room.attach(seat, ws);
       room.touch();
@@ -211,6 +212,34 @@ function handle(ws: WebSocket, msg: ClientMsg) {
     case 'rematch': {
       const err = ctx.room.rematchVote(ctx.side);
       if (err) sendWS(ws, { t: 'error', code: err });
+      return;
+    }
+    case 'undo_request': {
+      const err = ctx.room.requestUndo(ctx.side);
+      if (err) sendWS(ws, { t: 'error', code: err });
+      return;
+    }
+    case 'undo_accept': {
+      const err = ctx.room.acceptUndo(ctx.side);
+      if (err) sendWS(ws, { t: 'error', code: err });
+      return;
+    }
+    case 'undo_decline': {
+      const err = ctx.room.declineUndo(ctx.side);
+      if (err) sendWS(ws, { t: 'error', code: err });
+      return;
+    }
+    case 'leave': {
+      ctx.room.leave(ctx.side);
+      // 空房间直接移除,避免留下可被 token 重连的幽灵房
+      const r = ctx.room;
+      if (!r.seats.red && !r.seats.black) removeRoom(r.code);
+      return;
+    }
+    case 'dissolve': {
+      const err = ctx.room.dissolve(ctx.side);
+      if (err) sendWS(ws, { t: 'error', code: err });
+      else removeRoom(ctx.room.code);
       return;
     }
   }

@@ -23,8 +23,12 @@ export interface PlyRecord {
   from: number;
   to: number;
   capture: boolean;
+  /** 被吃子的身份(吃暗子 = 当场翻明,双方可见) */
+  capturedType?: PieceType;
   reveal?: PieceType;
   check: boolean;
+  /** 该步走之前的无吃子计数(悔棋回滚用) */
+  prevNoCapture: number;
 }
 
 export type GameOverReason =

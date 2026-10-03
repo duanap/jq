@@ -10,6 +10,8 @@ export interface Seat {
   side: Side;
   nick: string;
   token: string;
+  /** 房主(创建者),唯一可解散房间;换先时标记随人走 */
+  isOwner?: boolean;
   conn: WebSocket | null;
   lastSeen: number;
 }
@@ -30,6 +32,8 @@ export class Room {
   lastEvent?: { from: number; to: number; capture: boolean; reveal?: { pos: number; type: PieceType } };
   /** 双方吃子清单:red = 红方吃到的(黑子),black = 黑方吃到的(红子) */
   captured: { red: PieceType[]; black: PieceType[] } = { red: [], black: [] };
+  /** 待处理的悔棋请求方 */
+  pendingUndo?: Side;
   private clock: { red: ClockState; black: ClockState } | null;
   /** 房间自动解散时间(epoch ms);0 = 对局进行中不限 */
   private closeAt: number;
@@ -47,6 +51,10 @@ export class Room {
   phaseOf(): 'waiting' | 'playing' | 'over' {
     if (this.game.status === 'over') return 'over';
     return this.seats.red && this.seats.black ? 'playing' : 'waiting';
+  }
+
+  ownerSide(): Side {
+    return this.seats.red?.isOwner ? 'red' : this.seats.black?.isOwner ? 'black' : 'red';
   }
 
   touch() {
@@ -90,6 +98,8 @@ export class Room {
       capture: this.lastEvent?.capture,
       clocks: this.clock ? { red: this.remaining('red'), black: this.remaining('black') } : null,
       captured: { red: [...this.captured.red], black: [...this.captured.black] },
+      owner: this.ownerSide(),
+      pendingUndo: this.pendingUndo,
       drawOffer: this.drawOffer,
       rematch: { ...this.rematch },
       result: g.result,
@@ -147,6 +157,7 @@ export class Room {
       this.clock[this.game.turn]!.turnStart = now;
     }
     this.drawOffer = undefined;
+    this.pendingUndo = undefined;
     this.lastEvent = {
       from,
       to,
@@ -187,6 +198,73 @@ export class Room {
     return null;
   }
 
+  /** 悔棋:只能撤销自己刚走的最后一着(对方尚未回手),需对方同意 */
+  requestUndo(side: Side): string | null {
+    if (this.phaseOf() !== 'playing') return 'not_playing';
+    const last = this.game.history[this.game.history.length - 1];
+    if (!last || last.by !== side) return 'no_undo';
+    if (this.pendingUndo) return 'undo_pending';
+    this.pendingUndo = side;
+    this.broadcast();
+    return null;
+  }
+
+  acceptUndo(side: Side): string | null {
+    if (this.pendingUndo === undefined || this.pendingUndo === side) return 'no_undo_offer';
+    if (!this.game.undoLast()) {
+      this.pendingUndo = undefined;
+      this.broadcast();
+      return 'no_undo';
+    }
+    this.pendingUndo = undefined;
+    this.drawOffer = undefined;
+    // 被悔棋方恢复行棋,其计时从现在起算
+    if (this.clock) this.clock[this.game.turn]!.turnStart = Date.now();
+    this.touch();
+    this.broadcast();
+    return null;
+  }
+
+  declineUndo(side: Side): string | null {
+    if (this.pendingUndo === undefined || this.pendingUndo === side) return 'no_undo_offer';
+    this.pendingUndo = undefined;
+    this.broadcast();
+    return null;
+  }
+
+  /** 玩家退出:对局中视为认输;其余情况直接移除座位 */
+  leave(side: Side): 'resigned' | 'left' {
+    const wasPlaying = this.phaseOf() === 'playing';
+    const seat = this.seats[side];
+    if (seat) {
+      if (seat.conn) {
+        (seat.conn as { _ctx?: unknown })._ctx = undefined;
+        try { seat.conn.close(); } catch { /* ignore */ }
+        seat.conn = null;
+      }
+      this.seats[side] = undefined;
+    }
+    this.pendingUndo = undefined;
+    if (wasPlaying) {
+      this.finish({ reason: 'resign', winner: other(side) });
+      return 'resigned';
+    }
+    // 房主在等待期退出 = 解散;结束后退出则交给生命周期回收
+    if (this.ownerSide() === side && !this.seats.red?.isOwner && !this.seats.black?.isOwner) {
+      this.closeNow('dissolved');
+      return 'left';
+    }
+    this.broadcast();
+    return 'left';
+  }
+
+  /** 房主解散房间 */
+  dissolve(side: Side): string | null {
+    if (this.ownerSide() !== side) return 'not_owner';
+    this.closeNow('dissolved');
+    return null;
+  }
+
   rematchVote(side: Side): string | null {
     if (this.phaseOf() !== 'over') return 'not_over';
     this.rematch[side] = true;
@@ -206,6 +284,7 @@ export class Room {
     this.game = new JieqiGame();
     this.rematch = { red: false, black: false };
     this.drawOffer = undefined;
+    this.pendingUndo = undefined;
     this.lastEvent = undefined;
     this.captured = { red: [], black: [] };
     this.startedAt = Date.now();

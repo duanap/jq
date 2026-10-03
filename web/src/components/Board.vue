@@ -57,7 +57,68 @@ function styleOf(i: number) {
 }
 
 function label(p: { side: Side; revealed: boolean; type?: string }): string {
-  return p.revealed && p.type ? CHARS[p.side][p.type] : '揭';
+  return p.revealed && p.type ? CHARS[p.side][p.type] : '';
+}
+
+// ---------- 楚河横幅(3 秒自动消失)与将军/绝杀特效 ----------
+const banner = ref<{ text: string; tone: string } | null>(null);
+let bannerTimer: ReturnType<typeof setTimeout> | null = null;
+function showBanner(text: string, tone = 'turn', ms = 3000) {
+  banner.value = { text, tone };
+  if (bannerTimer) clearTimeout(bannerTimer);
+  bannerTimer = setTimeout(() => (banner.value = null), ms);
+}
+
+const fx = ref<string | null>(null);
+let fxTimer: ReturnType<typeof setTimeout> | null = null;
+function showFx(text: string, ms = 1900) {
+  fx.value = text;
+  if (fxTimer) clearTimeout(fxTimer);
+  fxTimer = setTimeout(() => (fx.value = null), ms);
+}
+
+watch(
+  () => props.state.turn,
+  () => {
+    if (props.state.phase === 'playing' && props.state.turn === props.you) {
+      showBanner(props.state.check ? '轮到你 · 将军!' : '轮到你走子');
+    }
+  },
+);
+watch(
+  () => props.state.check,
+  (c, was) => {
+    if (c && !was && props.state.phase === 'playing') showFx('将军!');
+  },
+);
+const mateFxDone = ref(false);
+watch(
+  () => props.state.result,
+  (r) => {
+    if (r?.reason === 'mate' && !mateFxDone.value) {
+      mateFxDone.value = true;
+      showFx('绝杀!', 2300);
+    }
+  },
+);
+
+// ---------- 开局摆子动画 ----------
+const dealing = ref(false);
+watch(
+  () => [props.state.phase, props.state.moveNum] as const,
+  ([phase, moveNum]) => {
+    if (phase === 'playing' && moveNum === 0) {
+      dealing.value = true;
+      setTimeout(() => (dealing.value = false), 1500);
+    }
+  },
+  { immediate: true },
+);
+function dealDelay(i: number) {
+  const r = Math.floor(i / 9);
+  const c = i % 9;
+  const fromMy = props.you === 'black' ? r : 9 - r;
+  return `${Math.min(1100, fromMy * 80 + c * 25)}ms`;
 }
 
 const kingInCheck = computed(() => {
@@ -72,21 +133,6 @@ const kingInCheck = computed(() => {
 
 const last = computed(() => props.state.lastMove);
 
-/** 吃子托盘:同类合并计数,按被吃先后排列(先被吃在前)。左 = 黑方(屏幕上方)吃到的红子;右 = 红方吃到的黑子 */
-const capturedGroups = computed(() => {
-  const cap = props.state.captured ?? { red: [], black: [] };
-  const group = (types: PieceType[]) => {
-    const out: { type: PieceType; n: number }[] = [];
-    for (const t of types) {
-      const g = out.find((o) => o.type === t);
-      if (g) g.n += 1;
-      else out.push({ type: t, n: 1 });
-    }
-    return out;
-  };
-  return { left: group(cap.black), right: group(cap.red) };
-});
-
 /** 上一步的"起点→终点"箭头(viewBox 坐标,终点前缩避免整段压在棋子下) */
 const arrow = computed(() => {
   const lm = props.state.lastMove;
@@ -99,6 +145,22 @@ const arrow = computed(() => {
   const len = Math.hypot(dx, dy) || 1;
   const trim = Math.min(38, len * 0.42);
   return { x1, y1, ex: x2 - (dx / len) * trim, ey: y2 - (dy / len) * trim };
+});
+
+/** 吃子托盘:同类合并计数,按被吃先后排列(先被吃在前)。
+ *  屏幕上方/左侧 = 黑方(上方玩家)吃到的红子;下方/右侧 = 红方吃到的黑子 */
+const capturedGroups = computed(() => {
+  const cap = props.state.captured ?? { red: [], black: [] };
+  const group = (types: PieceType[]) => {
+    const out: { type: PieceType; n: number }[] = [];
+    for (const t of types) {
+      const g = out.find((o) => o.type === t);
+      if (g) g.n += 1;
+      else out.push({ type: t, n: 1 });
+    }
+    return out;
+  };
+  return { opp: group(cap.black), mine: group(cap.red) };
 });
 
 const LINES: [number, number, number, number][] = (() => {
@@ -118,8 +180,14 @@ const LINES: [number, number, number, number][] = (() => {
 
 <template>
   <div class="board-wrap">
+    <div class="tray top">
+      <div v-for="g in capturedGroups.opp" :key="'bt' + g.type" class="mini red">
+        <span>{{ CHARS.red[g.type] }}</span>
+        <i v-if="g.n > 1">{{ g.n }}</i>
+      </div>
+    </div>
     <div class="tray left">
-      <div v-for="g in capturedGroups.left" :key="'bl' + g.type" class="mini red">
+      <div v-for="g in capturedGroups.opp" :key="'bl' + g.type" class="mini red">
         <span>{{ CHARS.red[g.type] }}</span>
         <i v-if="g.n > 1">{{ g.n }}</i>
       </div>
@@ -151,11 +219,11 @@ const LINES: [number, number, number, number][] = (() => {
         <div
           v-if="p"
           class="piece"
-          :class="[p.side, { dark: !p.revealed, sel: selected === i, chk: i === kingInCheck, flip: flipping === i }]"
-          :style="styleOf(i)"
+          :class="[p.side, { dark: !p.revealed, sel: selected === i, chk: i === kingInCheck, flip: flipping === i, deal: dealing }]"
+          :style="dealing ? { ...styleOf(i), animationDelay: dealDelay(i) } : styleOf(i)"
           @pointerdown.stop.prevent="tap(i)"
         >
-          <span>{{ label(p) }}</span>
+          <span v-if="p.revealed">{{ label(p) }}</span>
         </div>
       </template>
 
@@ -185,10 +253,19 @@ const LINES: [number, number, number, number][] = (() => {
           marker-end="url(#jq-arrow-head)"
         />
       </svg>
+
+      <div v-if="banner" class="river-banner" :class="banner.tone">{{ banner.text }}</div>
+      <div v-if="fx" class="fx"><span>{{ fx }}</span></div>
     </div>
 
     <div class="tray right">
-      <div v-for="g in capturedGroups.right" :key="'br' + g.type" class="mini black">
+      <div v-for="g in capturedGroups.mine" :key="'br' + g.type" class="mini black">
+        <span>{{ CHARS.black[g.type] }}</span>
+        <i v-if="g.n > 1">{{ g.n }}</i>
+      </div>
+    </div>
+    <div class="tray bottom">
+      <div v-for="g in capturedGroups.mine" :key="'bb' + g.type" class="mini black">
         <span>{{ CHARS.black[g.type] }}</span>
         <i v-if="g.n > 1">{{ g.n }}</i>
       </div>
@@ -198,62 +275,47 @@ const LINES: [number, number, number, number][] = (() => {
 
 <style scoped>
 .board-wrap {
-  display: flex;
-  align-items: center;
+  --bw: min(94vw, 56vh, 560px);
+  display: grid;
+  gap: 6px;
   justify-content: center;
-  gap: 5px;
+  align-items: center;
+  grid-template-areas: 'top' 'board' 'bottom';
+  grid-template-columns: min-content;
   padding: 4px 8px;
 }
-/* 吃子托盘:贴棋盘两侧,与棋盘等高 */
+.tray.top { grid-area: top; }
+.tray.bottom { grid-area: bottom; }
+.tray.left, .tray.right { display: none; }
 .tray {
-  width: 34px;
-  max-height: calc(var(--bw) * 10 / 9);
   display: flex;
-  flex-direction: column;
-  align-items: center;
   gap: 3px;
   overflow: hidden;
-  padding-top: 2px;
 }
-.mini {
-  position: relative;
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  font-family: 'KaiTi', 'STKaiti', 'Noto Serif SC', serif;
-  font-size: 16px;
-  font-weight: 700;
-  line-height: 1;
-  background: radial-gradient(circle at 35% 30%, #fdf7e7, #f1e0b7 62%, #d8bf8a);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+.tray.top, .tray.bottom {
+  flex-direction: row;
+  max-width: var(--bw);
+  min-height: 30px;
 }
-.mini.red {
-  color: #b03024;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35), inset 0 0 0 1.5px rgba(176, 48, 36, 0.45);
-}
-.mini.black {
-  color: #2f2a26;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35), inset 0 0 0 1.5px rgba(47, 42, 38, 0.45);
-}
-.mini i {
-  position: absolute;
-  top: -5px;
-  right: -7px;
-  background: #d6451e;
-  color: #fff;
-  font-style: normal;
-  font-size: 10px;
-  line-height: 1;
-  padding: 2px 4px;
-  border-radius: 8px;
-  font-family: system-ui, sans-serif;
+/* PC/横屏:托盘放两侧,棋盘更大 */
+@media (orientation: landscape) {
+  .board-wrap {
+    --bw: min(calc(100vw - 250px), calc((100vh - 215px) * 0.9), 640px);
+    grid-template-areas: 'left board right';
+    grid-template-columns: min-content min-content min-content;
+  }
+  .tray.top, .tray.bottom { display: none; }
+  .tray.left, .tray.right {
+    display: flex;
+    flex-direction: column;
+    max-height: calc(var(--bw) * 10 / 9);
+    min-width: 30px;
+  }
+  .tray.left { grid-area: left; }
+  .tray.right { grid-area: right; }
 }
 .board {
-  --bw: min(calc(94vw - 90px), 56vh, 560px);
+  grid-area: board;
   position: relative;
   width: var(--bw);
   aspect-ratio: 9 / 10;
@@ -297,20 +359,50 @@ const LINES: [number, number, number, number][] = (() => {
   font-size: calc(var(--bw) / 9 * 0.52);
   font-weight: 700;
   line-height: 1;
-  background: radial-gradient(circle at 35% 30%, #fdf7e7, #f1e0b7 62%, #d8bf8a);
-  box-shadow: 0 3px 6px rgba(0, 0, 0, 0.35), inset 0 0 0 3px rgba(0, 0, 0, 0.08);
+  color: #333;
+  background: radial-gradient(circle at 32% 26%, #fef9ec 0%, #f6e7c3 40%, #e6cd97 72%, #c9a55e 100%);
+  box-shadow:
+    0 4px 9px rgba(0, 0, 0, 0.42),
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    inset 0 2px 2px rgba(255, 255, 255, 0.7),
+    inset 0 -3px 6px rgba(133, 94, 40, 0.5);
   cursor: pointer;
 }
+.piece::before {
+  content: '';
+  position: absolute;
+  inset: 8%;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  opacity: 0.6;
+  pointer-events: none;
+}
 .piece.red {
-  color: #b03024;
-  box-shadow: 0 3px 6px rgba(0, 0, 0, 0.35), inset 0 0 0 3px rgba(176, 48, 36, 0.4);
+  color: #a5271c;
 }
 .piece.black {
-  color: #2f2a26;
-  box-shadow: 0 3px 6px rgba(0, 0, 0, 0.35), inset 0 0 0 3px rgba(47, 42, 38, 0.4);
+  color: #26211d;
 }
-.piece.dark span {
-  opacity: 0.38;
+.piece span {
+  position: relative;
+  text-shadow: 0 1px 1px rgba(255, 255, 255, 0.65);
+}
+/* 未揭开的棋子:木质背面,无文字 */
+.piece.dark {
+  background: radial-gradient(circle at 32% 26%, #eeddb2 0%, #dcc28c 45%, #c6a569 75%, #ab8a4e 100%);
+  cursor: pointer;
+}
+.piece.dark::before {
+  opacity: 0.28;
+}
+.piece.dark::after {
+  content: '';
+  position: absolute;
+  inset: 26%;
+  border-radius: 50%;
+  border: 1px solid rgba(90, 60, 20, 0.4);
+  box-shadow: inset 0 1px 3px rgba(90, 60, 20, 0.35);
+  pointer-events: none;
 }
 .piece.sel {
   outline: 3px solid #d9a514;
@@ -336,6 +428,19 @@ const LINES: [number, number, number, number][] = (() => {
     transform: translate(-50%, -50%) rotateY(0);
   }
 }
+.piece.deal {
+  animation: dealin 0.45s ease both;
+}
+@keyframes dealin {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) translateY(-14px) scale(0.6);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, -50%) translateY(0) scale(1);
+  }
+}
 .mark {
   position: absolute;
   width: calc(var(--bw) / 9 * 0.92);
@@ -354,13 +459,6 @@ const LINES: [number, number, number, number][] = (() => {
   border-radius: 50%;
   box-shadow: 0 0 12px rgba(230, 120, 20, 0.65);
 }
-.arrow-layer {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-}
 .dot {
   position: absolute;
   width: calc(var(--bw) / 9 * 0.32);
@@ -374,5 +472,118 @@ const LINES: [number, number, number, number][] = (() => {
   width: calc(var(--bw) / 9 * 0.8);
   background: transparent;
   border: 4px solid rgba(200, 60, 40, 0.75);
+}
+.arrow-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.mini {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  font-family: 'KaiTi', 'STKaiti', 'Noto Serif SC', serif;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+  background: radial-gradient(circle at 32% 26%, #fef9ec, #f1e0b7 55%, #cfae72 100%);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+.mini.red {
+  color: #a5271c;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35), inset 0 0 0 1.5px rgba(165, 39, 28, 0.45);
+}
+.mini.black {
+  color: #26211d;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35), inset 0 0 0 1.5px rgba(38, 33, 29, 0.45);
+}
+.mini i {
+  position: absolute;
+  top: -5px;
+  right: -7px;
+  background: #d6451e;
+  color: #fff;
+  font-style: normal;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 8px;
+  font-family: system-ui, sans-serif;
+}
+.river-banner {
+  position: absolute;
+  left: 50%;
+  top: 41%;
+  transform: translate(-50%, -50%);
+  z-index: 15;
+  padding: 8px 26px;
+  border-radius: 999px;
+  background: rgba(30, 25, 15, 0.78);
+  color: #ffd97a;
+  font-size: calc(var(--bw) * 0.052);
+  font-weight: 700;
+  letter-spacing: 2px;
+  border: 1px solid rgba(255, 217, 122, 0.5);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  white-space: nowrap;
+  animation: banner-in 0.3s ease;
+}
+.river-banner.danger {
+  color: #ff9d94;
+  border-color: rgba(255, 120, 110, 0.6);
+}
+@keyframes banner-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) translateY(-8px);
+  }
+}
+.fx {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 20;
+}
+.fx span {
+  font-family: 'KaiTi', 'STKaiti', serif;
+  font-size: calc(var(--bw) * 0.17);
+  font-weight: 900;
+  letter-spacing: 8px;
+  color: #d82a1e;
+  text-shadow:
+    0 0 18px rgba(255, 215, 0, 0.9),
+    0 2px 0 rgba(120, 0, 0, 0.55),
+    0 0 2px #fff;
+  -webkit-text-stroke: 1px rgba(255, 235, 180, 0.85);
+  animation: fx-pop 1.9s ease-out forwards;
+}
+@keyframes fx-pop {
+  0% {
+    transform: scale(2.6);
+    opacity: 0;
+  }
+  18% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  70% {
+    transform: scale(1.05);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1.08);
+    opacity: 0;
+  }
 }
 </style>
