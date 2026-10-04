@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { ClientMsg, TimeOpts } from '@jieqi/shared';
-import { allRooms, createRoom, getRoom, removeRoom, sweepExpired } from './rooms';
+import { allRooms, createRoom, getRoom, removeRoom, sweepStale } from './rooms';
 import type { Room } from './room';
 import { CLOCK_TICK_MS, HB_INTERVAL_MS, PORT } from './config';
 import { sendWS } from './send';
@@ -162,6 +162,7 @@ function handle(ws: WebSocket, msg: ClientMsg) {
       room.attach(seat, ws);
       room.touch();
       if (room.phaseOf() === 'playing') room.startClocks();
+      console.log(`[room] join ${code} -> 新座位 ${free}`);
       sendWS(ws, room.joinedMsg(seat));
       room.broadcast(); // 通知对方:对手已入座/开局
       return;
@@ -186,7 +187,10 @@ function handle(ws: WebSocket, msg: ClientMsg) {
         return;
       }
       const err = ctx.room.onMove(ctx.side, from as number, to as number);
-      if (err) sendWS(ws, { t: 'error', code: err });
+      if (err) {
+        console.log(`[room] move 拒绝: ${err} (${from}->${to})`);
+        sendWS(ws, { t: 'error', code: err });
+      }
       return;
     }
     case 'resign': {
@@ -262,8 +266,8 @@ setInterval(() => {
   for (const r of allRooms()) r.watchdog(now);
 }, CLOCK_TICK_MS);
 
-// 房间生命周期清扫(等待限时/结算保留期/对局僵死兜底)
-setInterval(() => sweepExpired(Date.now()), 1000).unref();
+// 僵死房间清扫(静默回收,不打扰正常对局)
+setInterval(() => sweepStale(Date.now()), 1000).unref();
 
 server.listen(PORT, () => {
   console.log(`[jieqi] 游戏服务已启动 :${PORT},静态目录 ${webDist}`);

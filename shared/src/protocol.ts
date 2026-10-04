@@ -26,8 +26,12 @@ export interface GameState {
   reveal?: { pos: number; type: PieceType };
   capture?: boolean;
   clocks: Clocks | null;
-  /** 双方吃子清单:red = 红方吃到的(黑子),black = 黑方吃到的(红子) */
-  captured: { red: PieceType[]; black: PieceType[] };
+  /**
+   * 吃子清单(按接收者视角生成):
+   * mine = 我吃到的(可见真实身份);theirs = 对方吃到的我的子,
+   * 其中对方吃掉的暗子对我是保密的(type 为 null,前端显示遮罩背面)。
+   */
+  captured: { mine: { type: PieceType | null }[]; theirs: { type: PieceType | null }[] };
   /** 房主(唯一可解散)所在一方 */
   owner: Side;
   /** 待处理的悔棋请求方 */
@@ -35,8 +39,6 @@ export interface GameState {
   drawOffer?: Side;
   rematch: { red: boolean; black: boolean };
   result?: GameResult;
-  /** 房间自动解散时间(epoch ms);对局进行中为空 */
-  closeAt?: number;
 }
 
 export type ClientMsg =

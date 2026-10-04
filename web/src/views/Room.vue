@@ -105,17 +105,14 @@ const abandonText = computed(() => {
   return left > 0 ? `${left}s 后判你胜` : '等待判定…';
 });
 
-// 房间生命周期倒计时(等待期/结算保留期)
-const closeLeft = computed(() => {
-  void nowTick.value;
-  const s = st.value;
-  if (!s?.closeAt) return null;
-  const left = s.closeAt - Date.now();
-  if (left <= 0) return '即将解散';
-  const m = Math.floor(left / 60000);
-  const sec = Math.floor((left % 60000) / 1000);
-  return m > 0 ? `${m} 分 ${sec} 秒` : `${sec} 秒`;
-});
+// 结算弹窗可关闭查看棋盘;关闭后底部保留再来一局入口
+const resultDismissed = ref(false);
+watch(
+  () => st.value?.phase,
+  (p) => {
+    if (p !== 'over') resultDismissed.value = false;
+  },
+);
 
 // ---------- 房主/退出/解散 ----------
 const isOwner = computed(() => {
@@ -224,20 +221,25 @@ function onUndo() {
           <button @click="copyCode">复制房号</button>
         </div>
         <div class="wait">等待对手加入…</div>
-        <div class="ttl" v-if="closeLeft">房间将在 {{ closeLeft }} 后无人加入自动解散</div>
       </div>
     </div>
 
+    <div class="actions" v-if="st.phase === 'over' && resultDismissed">
+      <button class="primary" :disabled="iVoted" @click="net.send({ t: 'rematch' })">{{ rematchLabel }}</button>
+      <button @click="resultDismissed = false">回看结算</button>
+      <button @click="leaveRoom">回主页</button>
+    </div>
+
     <transition name="fade">
-      <div v-if="st.phase === 'over'" class="overlay result-ov">
+      <div v-if="st.phase === 'over' && !resultDismissed" class="overlay result-ov">
         <div class="result-card">
           <div class="result-title" :class="resultTone">{{ resultText }}</div>
           <div class="result-sub">本局共 {{ st.moveNum }} 步</div>
           <div class="result-btns">
             <button class="primary" :disabled="iVoted" @click="net.send({ t: 'rematch' })">{{ rematchLabel }}</button>
-            <button @click="leaveRoom">回主页</button>
+            <button @click="resultDismissed = true">查看棋盘</button>
           </div>
-          <div class="ttl" v-if="closeLeft">房间将在 {{ closeLeft }} 后自动解散,点"再来一局"继续保留</div>
+          <div class="result-tip">关闭弹窗可复盘棋盘,底部保留"再来一局"入口</div>
         </div>
       </div>
     </transition>
@@ -437,6 +439,11 @@ header {
   color: #8a94a8;
   font-size: 13px;
   margin-bottom: 18px;
+}
+.result-tip {
+  margin-top: 12px;
+  color: #6b7280;
+  font-size: 12px;
 }
 .result-btns {
   display: flex;

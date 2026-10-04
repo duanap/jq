@@ -98,8 +98,8 @@ export function applyServerMsg(m: ServerMsg) {
       store.state = m.state;
       break;
     case 'closed': {
-      // 服务端解散房间(生命周期到期/房主解散):清记录回主页
-      showToast(m.reason === 'dissolved' ? '房间已解散' : '房间已解散(超时无活动)');
+      // 服务端解散房间(房主解散/长时间无活动回收):清记录回主页
+      showToast(m.reason === 'dissolved' ? '房间已解散' : '房间已解散(长时间无活动)');
       localStorage.removeItem('jieqi.last');
       localStorage.removeItem('jieqi.token.' + store.room);
       store.autoJoin = '';

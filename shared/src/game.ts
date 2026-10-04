@@ -9,8 +9,10 @@ export interface AppliedMove {
   from: number;
   to: number;
   capture: boolean;
-  /** 被吃子的身份(吃暗子 = 当场翻开,双方可见) */
+  /** 被吃子的身份(仅吃子方可见) */
   capturedType?: PieceType;
+  /** 被吃子被吃时是否为暗面 */
+  capturedWasDark?: boolean;
   reveal?: PieceType;
   check: boolean;
   result?: GameResult;
@@ -96,6 +98,7 @@ export class JieqiGame {
     const dst = this.board[to];
     const capture = !!dst;
     const capturedType = dst?.trueType;
+    const capturedWasDark = dst ? !dst.revealed : undefined;
     const prevNoCapture = this.noCapturePlies;
     this.board[to] = p;
     this.board[from] = null;
@@ -108,7 +111,7 @@ export class JieqiGame {
     const check = inCheck(this.board, this.turn);
     const key = posKey(this.board, this.turn);
     this.bump(key);
-    const rec = { by: p.side, from, to, capture, capturedType, reveal, check, prevNoCapture, key };
+    const rec = { by: p.side, from, to, capture, capturedType, capturedWasDark, reveal, check, prevNoCapture, key };
     this.history.push(rec);
 
     let result: GameResult | undefined;
@@ -123,12 +126,12 @@ export class JieqiGame {
       this.status = 'over';
       this.result = result;
     }
-    return { by: rec.by, from, to, capture, capturedType, reveal, check, result };
+    return { by: rec.by, from, to, capture, capturedType, capturedWasDark, reveal, check, result };
   }
 
   /**
    * 悔棋:撤销最后一着(仅对局中)。
-   * 揭棋约定:翻开的身份不回收,被吃恢复的子因身份已公开也恢复为明子。
+   * 揭棋约定:自己翻开过的身份不回收;被吃恢复的子按被吃时的明暗恢复(吃子方已知身份属其记忆,盘面不泄露)。
    */
   undoLast(): boolean {
     if (this.status !== 'playing') return false;
@@ -138,7 +141,11 @@ export class JieqiGame {
     this.board[last.from] = mover;
     this.board[last.to] = null;
     if (last.capturedType) {
-      this.board[last.to] = { side: other(last.by), trueType: last.capturedType, revealed: true };
+      this.board[last.to] = {
+        side: other(last.by),
+        trueType: last.capturedType,
+        revealed: !last.capturedWasDark,
+      };
     }
     this.turn = last.by;
     this.ply -= 1;

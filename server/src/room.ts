@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import type { WebSocket } from 'ws';
 import { JieqiGame, inCheck, other, publicView } from '@jieqi/shared';
 import type { GameResult, GameState, PieceType, Side, TimeOpts } from '@jieqi/shared';
-import { ABANDON_MS, OVER_TTL_MS, STALE_MS, WAITING_TTL_MS } from './config';
+import { ABANDON_MS, STALE_MS } from './config';
 import { appendRecord } from './store';
 import { sendWS } from './send';
 
@@ -30,13 +30,14 @@ export class Room {
   drawOffer?: Side;
   rematch: { red: boolean; black: boolean } = { red: false, black: false };
   lastEvent?: { from: number; to: number; capture: boolean; reveal?: { pos: number; type: PieceType } };
-  /** 双方吃子清单:red = 红方吃到的(黑子),black = 黑方吃到的(红子) */
-  captured: { red: PieceType[]; black: PieceType[] } = { red: [], black: [] };
+  /** 吃子真相:red/black 各自吃到的子;hidden = 被吃时是暗子(仅吃子方知道身份) */
+  captured: {
+    red: { type: PieceType; hidden: boolean }[];
+    black: { type: PieceType; hidden: boolean }[];
+  } = { red: [], black: [] };
   /** 待处理的悔棋请求方 */
   pendingUndo?: Side;
   private clock: { red: ClockState; black: ClockState } | null;
-  /** 房间自动解散时间(epoch ms);0 = 对局进行中不限 */
-  private closeAt: number;
   startedAt = Date.now();
   lastActivity = Date.now();
   private recorded = false;
@@ -45,7 +46,6 @@ export class Room {
     this.code = code;
     this.opts = { baseMin: opts.baseMin ?? 10, incSec: opts.incSec ?? 3 };
     this.clock = this.opts.baseMin > 0 ? { red: { ms: 0, turnStart: 0 }, black: { ms: 0, turnStart: 0 } } : null;
-    this.closeAt = Date.now() + WAITING_TTL_MS; // 建房后限时等对手
   }
 
   phaseOf(): 'waiting' | 'playing' | 'over' {
@@ -65,9 +65,8 @@ export class Room {
     return { side, nick, token: randomBytes(16).toString('hex'), conn: null, lastSeen: Date.now() };
   }
 
-  /** 对局正式开始(第二个玩家入座)时启动时钟,并解除解散倒计时 */
+  /** 对局正式开始(第二个玩家入座)时启动时钟 */
   startClocks() {
-    this.closeAt = 0;
     if (!this.clock) return;
     const now = Date.now();
     const base = this.opts.baseMin * 60_000;
@@ -83,9 +82,12 @@ export class Room {
     return c.ms;
   }
 
-  snapshot(): GameState {
+  snapshot(viewer: Side): GameState {
     const g = this.game;
     const info = (s?: Seat) => (s ? { nick: s.nick, online: !!s.conn } : null);
+    // 吃子按接收者视角:我吃的可见身份;对方吃的暗子对我是保密项(仅显示背面)
+    const mine = this.captured[viewer].map((e) => ({ type: e.type as PieceType | null }));
+    const theirs = this.captured[other(viewer)].map((e) => ({ type: (e.hidden ? null : e.type) as PieceType | null }));
     return {
       phase: this.phaseOf(),
       seats: { red: info(this.seats.red), black: info(this.seats.black) },
@@ -97,25 +99,24 @@ export class Room {
       reveal: this.lastEvent?.reveal,
       capture: this.lastEvent?.capture,
       clocks: this.clock ? { red: this.remaining('red'), black: this.remaining('black') } : null,
-      captured: { red: [...this.captured.red], black: [...this.captured.black] },
+      captured: { mine, theirs },
       owner: this.ownerSide(),
       pendingUndo: this.pendingUndo,
       drawOffer: this.drawOffer,
       rematch: { ...this.rematch },
       result: g.result,
-      closeAt: this.closeAt || undefined,
     };
   }
 
   broadcast() {
     for (const s of [this.seats.red, this.seats.black]) {
       if (!s?.conn) continue;
-      sendWS(s.conn, { t: 'state', seq: ++this.seq, you: s.side, state: this.snapshot() });
+      sendWS(s.conn, { t: 'state', seq: ++this.seq, you: s.side, state: this.snapshot(s.side) });
     }
   }
 
   joinedMsg(seat: Seat) {
-    return { t: 'joined' as const, room: this.code, token: seat.token, you: seat.side, state: this.snapshot() };
+    return { t: 'joined' as const, room: this.code, token: seat.token, you: seat.side, state: this.snapshot(seat.side) };
   }
 
   /** 绑定连接;同座位的旧连接直接顶掉 */
@@ -164,7 +165,7 @@ export class Room {
       capture: mv.capture,
       reveal: mv.reveal ? { pos: to, type: mv.reveal } : undefined,
     };
-    if (mv.capturedType) this.captured[side]!.push(mv.capturedType);
+    if (mv.capturedType) this.captured[side]!.push({ type: mv.capturedType, hidden: !!mv.capturedWasDark });
     this.touch();
     if (this.game.status === 'over') this.finish(this.game.result!);
     else this.broadcast();
@@ -211,11 +212,14 @@ export class Room {
 
   acceptUndo(side: Side): string | null {
     if (this.pendingUndo === undefined || this.pendingUndo === side) return 'no_undo_offer';
+    const requester = this.pendingUndo;
+    const last = this.game.history[this.game.history.length - 1];
     if (!this.game.undoLast()) {
       this.pendingUndo = undefined;
       this.broadcast();
       return 'no_undo';
     }
+    if (last?.capturedType) this.captured[requester]!.pop(); // 悔棋同步移除吃子记录
     this.pendingUndo = undefined;
     this.drawOffer = undefined;
     // 被悔棋方恢复行棋,其计时从现在起算
@@ -289,16 +293,11 @@ export class Room {
     this.captured = { red: [], black: [] };
     this.startedAt = Date.now();
     this.recorded = false;
-    this.closeAt = 0;
     this.startClocks();
     this.broadcast();
   }
 
-  /** 是否到期/僵死(供清扫) */
-  expired(now: number): boolean {
-    return this.closeAt > 0 && now >= this.closeAt;
-  }
-
+  /** 对局僵死兜底(不限时房挂机过久),供清扫 */
   stale(now: number): boolean {
     return this.phaseOf() === 'playing' && now - this.lastActivity > STALE_MS;
   }
@@ -314,7 +313,6 @@ export class Room {
   finish(result: GameResult) {
     this.game.status = 'over';
     this.game.result = result;
-    this.closeAt = Date.now() + OVER_TTL_MS; // 结算后保留一段时间供复盘/再来一局
     if (!this.recorded) {
       this.recorded = true;
       void appendRecord({

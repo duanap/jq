@@ -50,9 +50,13 @@ function tap(i: number) {
   }
 }
 
+/** 视角:黑方玩家棋盘旋转 180°,自己的子永远在下方 */
+const flip = computed(() => props.you === 'black');
+
 function styleOf(i: number) {
-  const r = Math.floor(i / 9);
-  const c = i % 9;
+  const v = flip.value ? 89 - i : i;
+  const r = Math.floor(v / 9);
+  const c = v % 9;
   return { left: `${((50 + c * 100) / 9).toFixed(3)}%`, top: `${((50 + r * 100) / 10).toFixed(3)}%` };
 }
 
@@ -117,8 +121,9 @@ watch(
 function dealDelay(i: number) {
   const r = Math.floor(i / 9);
   const c = i % 9;
-  const fromMy = props.you === 'black' ? r : 9 - r;
-  return `${Math.min(1100, fromMy * 80 + c * 25)}ms`;
+  const dr = flip.value ? 9 - r : r;
+  const dc = flip.value ? 8 - c : c;
+  return `${Math.min(1100, (9 - dr) * 80 + dc * 25)}ms`;
 }
 
 const kingInCheck = computed(() => {
@@ -133,14 +138,18 @@ const kingInCheck = computed(() => {
 
 const last = computed(() => props.state.lastMove);
 
-/** 上一步的"起点→终点"箭头(viewBox 坐标,终点前缩避免整段压在棋子下) */
+/** 上一步的"起点→终点"箭头(viewBox 坐标;黑方视角整体旋转 180°,终点前缩) */
 const arrow = computed(() => {
   const lm = props.state.lastMove;
   if (!lm) return null;
   const fr = Math.floor(lm.from / 9), fc = lm.from % 9;
   const tr = Math.floor(lm.to / 9), tc = lm.to % 9;
-  const x1 = 50 + fc * 100, y1 = 50 + fr * 100;
-  const x2 = 50 + tc * 100, y2 = 50 + tr * 100;
+  let x1 = 50 + fc * 100, y1 = 50 + fr * 100;
+  let x2 = 50 + tc * 100, y2 = 50 + tr * 100;
+  if (flip.value) {
+    x1 = 900 - x1; y1 = 1000 - y1;
+    x2 = 900 - x2; y2 = 1000 - y2;
+  }
   const dx = x2 - x1, dy = y2 - y1;
   const len = Math.hypot(dx, dy) || 1;
   const trim = Math.min(38, len * 0.42);
@@ -148,11 +157,12 @@ const arrow = computed(() => {
 });
 
 /** 吃子托盘:同类合并计数,按被吃先后排列(先被吃在前)。
- *  屏幕上方/左侧 = 黑方(上方玩家)吃到的红子;下方/右侧 = 红方吃到的黑子 */
+ *  屏幕上方/左侧 = 对方吃到的我的子(其中暗子被吃对我保密,只显示遮罩背面);
+ *  下方/右侧 = 我吃到的对方的子(可见真实身份) */
 const capturedGroups = computed(() => {
-  const cap = props.state.captured ?? { red: [], black: [] };
-  const group = (types: PieceType[]) => {
-    const out: { type: PieceType; n: number }[] = [];
+  const cap = props.state.captured ?? { mine: [], theirs: [] };
+  const group = (types: (PieceType | null)[]) => {
+    const out: { type: PieceType | null; n: number }[] = [];
     for (const t of types) {
       const g = out.find((o) => o.type === t);
       if (g) g.n += 1;
@@ -160,8 +170,10 @@ const capturedGroups = computed(() => {
     }
     return out;
   };
-  return { opp: group(cap.black), mine: group(cap.red) };
+  return { opp: group(cap.theirs), mine: group(cap.mine) };
 });
+const mySide = computed<Side>(() => (props.you === 'black' ? 'black' : 'red'));
+const oppSide = computed<Side>(() => (props.you === 'black' ? 'red' : 'black'));
 
 const LINES: [number, number, number, number][] = (() => {
   const L: [number, number, number, number][] = [];
@@ -181,14 +193,14 @@ const LINES: [number, number, number, number][] = (() => {
 <template>
   <div class="board-wrap">
     <div class="tray top">
-      <div v-for="g in capturedGroups.opp" :key="'bt' + g.type" class="mini red">
-        <span>{{ CHARS.red[g.type] }}</span>
+      <div v-for="(g, gi) in capturedGroups.opp" :key="'bt' + gi" class="mini" :class="g.type ? mySide : 'masked'">
+        <span v-if="g.type">{{ CHARS[mySide][g.type] }}</span>
         <i v-if="g.n > 1">{{ g.n }}</i>
       </div>
     </div>
     <div class="tray left">
-      <div v-for="g in capturedGroups.opp" :key="'bl' + g.type" class="mini red">
-        <span>{{ CHARS.red[g.type] }}</span>
+      <div v-for="(g, gi) in capturedGroups.opp" :key="'bl' + gi" class="mini" :class="g.type ? mySide : 'masked'">
+        <span v-if="g.type">{{ CHARS[mySide][g.type] }}</span>
         <i v-if="g.n > 1">{{ g.n }}</i>
       </div>
     </div>
@@ -259,14 +271,14 @@ const LINES: [number, number, number, number][] = (() => {
     </div>
 
     <div class="tray right">
-      <div v-for="g in capturedGroups.mine" :key="'br' + g.type" class="mini black">
-        <span>{{ CHARS.black[g.type] }}</span>
+      <div v-for="(g, gi) in capturedGroups.mine" :key="'br' + gi" class="mini" :class="oppSide">
+        <span v-if="g.type">{{ CHARS[oppSide][g.type] }}</span>
         <i v-if="g.n > 1">{{ g.n }}</i>
       </div>
     </div>
     <div class="tray bottom">
-      <div v-for="g in capturedGroups.mine" :key="'bb' + g.type" class="mini black">
-        <span>{{ CHARS.black[g.type] }}</span>
+      <div v-for="(g, gi) in capturedGroups.mine" :key="'bb' + gi" class="mini" :class="oppSide">
+        <span v-if="g.type">{{ CHARS[oppSide][g.type] }}</span>
         <i v-if="g.n > 1">{{ g.n }}</i>
       </div>
     </div>
@@ -387,22 +399,13 @@ const LINES: [number, number, number, number][] = (() => {
   position: relative;
   text-shadow: 0 1px 1px rgba(255, 255, 255, 0.65);
 }
-/* 未揭开的棋子:木质背面,无文字 */
+/* 未揭开的棋子:木质背面,无文字无标记 */
 .piece.dark {
   background: radial-gradient(circle at 32% 26%, #eeddb2 0%, #dcc28c 45%, #c6a569 75%, #ab8a4e 100%);
   cursor: pointer;
 }
 .piece.dark::before {
   opacity: 0.28;
-}
-.piece.dark::after {
-  content: '';
-  position: absolute;
-  inset: 26%;
-  border-radius: 50%;
-  border: 1px solid rgba(90, 60, 20, 0.4);
-  box-shadow: inset 0 1px 3px rgba(90, 60, 20, 0.35);
-  pointer-events: none;
 }
 .piece.sel {
   outline: 3px solid #d9a514;
@@ -516,6 +519,19 @@ const LINES: [number, number, number, number][] = (() => {
   padding: 2px 4px;
   border-radius: 8px;
   font-family: system-ui, sans-serif;
+}
+/* 被对方吃掉的暗子:对我保密,仅显示带遮罩的背面 */
+.mini.masked {
+  background: radial-gradient(circle at 32% 26%, #eeddb2 0%, #dcc28c 45%, #c6a569 75%, #ab8a4e 100%);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+.mini.masked::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: rgba(30, 25, 15, 0.42);
+  border: 1px solid rgba(90, 60, 20, 0.4);
 }
 .river-banner {
   position: absolute;

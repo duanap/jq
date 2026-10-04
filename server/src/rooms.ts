@@ -20,11 +20,11 @@ export const getRoom = (code: string) => rooms.get(code);
 export const allRooms = (): Room[] => [...rooms.values()];
 export const removeRoom = (code: string) => rooms.delete(code);
 
-/** 房间生命周期清扫:到期的广播解散并删除;对局中僵死兜底 */
-export function sweepExpired(now: number) {
+/** 僵死房间清扫(不限时房挂机过久),静默回收 */
+export function sweepStale(now: number) {
   for (const [code, r] of rooms) {
-    if (r.expired(now) || r.stale(now)) {
-      r.closeNow();
+    if (r.stale(now)) {
+      r.closeNow('stale');
       rooms.delete(code);
     }
   }

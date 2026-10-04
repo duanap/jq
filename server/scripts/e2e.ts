@@ -30,9 +30,12 @@ class Client {
   ws: WebSocket;
   private buf: ServerMsg[] = [];
   private waiters: { pred: (m: ServerMsg) => boolean; res: (m: ServerMsg) => void }[] = [];
+  /** 全体客户端登记,便于结束时统一关闭、避免 process.exit 截断日志 */
+  static all = new Set<Client>();
 
   private constructor(ws: WebSocket) {
     this.ws = ws;
+    Client.all.add(this);
     ws.on('message', (raw) => {
       let m: ServerMsg;
       try {
@@ -79,6 +82,10 @@ class Client {
 
   close() {
     this.ws.close();
+  }
+
+  static closeAll() {
+    for (const c of Client.all) c.close();
   }
 
   /** 清空未消费的缓冲消息(阶段切换时避免旧消息干扰断言) */
@@ -260,6 +267,85 @@ async function main() {
   u1.drain();
   u2.drain();
 
+  console.log('— 暗子被吃的保密视角 / 悔棋恢复暗面 —');
+  const p1 = await Client.connect();
+  p1.send({ t: 'create', nick: '保密甲', opts: { baseMin: 1, incSec: 0 } });
+  const jp1 = (await p1.next((m) => m.t === 'joined')) as Extract<ServerMsg, { t: 'joined' }>;
+  const p2 = await Client.connect();
+  p2.send({ t: 'join', room: jp1.room, nick: '保密乙' });
+  await p2.next((m) => m.t === 'joined');
+  const startState = (await p1.next((m) => m.t === 'state' && m.state.phase === 'playing')) as Extract<ServerMsg, { t: 'state' }>;
+
+  // 随机走子,直到出现"吃掉对方未翻开暗子"的一步
+  let pcur = startState.state;
+  let pcur2: GameState | null = null;
+  let darkCaptureTo = -1;
+  let darkCapturer: 'p1' | 'p2' = 'p1';
+  for (let round = 0; round < 120 && pcur.phase === 'playing' && darkCaptureTo < 0; round++) {
+    const side = pcur.turn;
+    const who = side === 'red' ? p1 : p2;
+    const board = boardFromView(pcur.cells);
+    const moves: [number, number][] = [];
+    let darkCap: [number, number] | null = null;
+    for (let i = 0; i < 90; i++) {
+      for (const t of legalTargets(board, side, i)) {
+        moves.push([i, t]);
+        const dst = pcur.cells[t];
+        if (dst && dst.side !== side && !dst.revealed) darkCap = [i, t];
+      }
+    }
+    if (moves.length === 0) break;
+    const pick = darkCap ?? moves[Math.floor(Math.random() * moves.length)]!;
+    if (darkCap) { darkCaptureTo = darkCap[1]; darkCapturer = side === 'red' ? 'p1' : 'p2'; }
+    who.send({ t: 'move', from: pick[0], to: pick[1] });
+    const inc = pcur.moveNum + 1;
+    const m1 = await Promise.race([
+      p1.next((m) => m.t === 'state' && m.state.moveNum === inc),
+      p1.next((m) => m.t === 'error').then((e) => {
+        throw new Error(`p1 move 被拒: ${(e as { code: string }).code}`);
+      }),
+    ]) as Extract<ServerMsg, { t: 'state' }>;
+    const m2 = (await p2.next((m) => m.t === 'state' && m.state.moveNum === inc)) as Extract<ServerMsg, { t: 'state' }>;
+    pcur = m1.state;
+    pcur2 = m2.state;
+    assertRedacted(`保密局第${inc}步`, pcur);
+  }
+  ok(darkCaptureTo >= 0 && !!pcur2, '随机对局中出现吃暗子');
+
+  if (darkCaptureTo >= 0 && pcur2) {
+    const capMine = pcur.captured.mine;
+    const capTheirs = pcur2.captured.theirs;
+    const capViewMine = darkCapturer === 'p1' ? capMine : capTheirs;
+    const capViewTheirs = darkCapturer === 'p1' ? capTheirs : capMine;
+    const capEntryMine = capViewMine[capViewMine.length - 1]!;
+    const capEntryTheirs = capViewTheirs[capViewTheirs.length - 1]!;
+    ok(capEntryMine.type !== null, '吃子方看到被吃暗子的真实身份');
+    ok(capEntryTheirs.type === null, '被吃方只看到遮罩背面(type 保密为 null)');
+
+    // 悔棋:被吃暗子恢复为背面(撤销吃子方的着法)
+    const undoCli = darkCapturer === 'p1' ? p1 : p2;
+    const otherCli = darkCapturer === 'p1' ? p2 : p1;
+    undoCli.send({ t: 'undo_request' });
+    await otherCli.next((m) => m.t === 'state' && !!m.state.pendingUndo);
+    otherCli.send({ t: 'undo_accept' });
+    const ru1 = (await p1.next((m) => m.t === 'state' && m.state.moveNum === pcur.moveNum - 1)) as Extract<ServerMsg, { t: 'state' }>;
+    const ru2 = (await p2.next((m) => m.t === 'state' && m.state.moveNum === pcur.moveNum - 1)) as Extract<ServerMsg, { t: 'state' }>;
+    const cellBack1 = ru1.state.cells[darkCaptureTo]!;
+    const cellBack2 = ru2.state.cells[darkCaptureTo]!;
+    ok(
+      cellBack1 !== null && !cellBack1.revealed && cellBack2 !== null && !cellBack2.revealed,
+      '悔棋后被吃暗子恢复为背面(双方视图一致)',
+    );
+    ok(
+      ru1.state.captured.mine.length === 0 && ru2.state.captured.theirs.length === 0,
+      '悔棋后吃子清单同步清空',
+    );
+  } else {
+    ok(false, '120 步内未出现吃暗子(极低概率)');
+  }
+  p1.close();
+  p2.close();
+
   console.log('— 房主解散 / 权限校验 —');
   u1.send({ t: 'dissolve' });
   const cl1 = (await u1.next((m) => m.t === 'closed')) as Extract<ServerMsg, { t: 'closed' }>;
@@ -284,8 +370,9 @@ async function main() {
 
   console.log(`\n结果:通过 ${pass} 项,失败 ${fails.length} 项`);
   if (fails.length) console.error('失败项:', fails);
+  Client.closeAll();
   child.kill();
-  process.exit(fails.length ? 1 : 0);
+  process.exitCode = fails.length ? 1 : 0;
 }
 
 main().catch((err) => {

@@ -23,8 +23,10 @@ export interface PlyRecord {
   from: number;
   to: number;
   capture: boolean;
-  /** 被吃子的身份(吃暗子 = 当场翻明,双方可见) */
+  /** 被吃子的身份(仅吃子方知道;被吃方若原本未见,只知少了子) */
   capturedType?: PieceType;
+  /** 被吃子被吃时是否已是明子(悔棋恢复用:暗子恢复为背面) */
+  capturedWasDark?: boolean;
   reveal?: PieceType;
   check: boolean;
   /** 该步走之前的无吃子计数(悔棋回滚用) */
