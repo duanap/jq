@@ -161,12 +161,12 @@ const arrow = computed(() => {
  *  下方/右侧 = 我吃到的对方的子(可见真实身份) */
 const capturedGroups = computed(() => {
   const cap = props.state.captured ?? { mine: [], theirs: [] };
-  const group = (types: (PieceType | null)[]) => {
+  const group = (entries: { type: PieceType | null }[]) => {
     const out: { type: PieceType | null; n: number }[] = [];
-    for (const t of types) {
-      const g = out.find((o) => o.type === t);
+    for (const { type } of entries) {
+      const g = out.find((o) => o.type === type);
       if (g) g.n += 1;
-      else out.push({ type: t, n: 1 });
+      else out.push({ type, n: 1 });
     }
     return out;
   };

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import {
   boardFromView, legalTargets,
-  type ClientMsg, type GameState, type PublicCell, type ServerMsg,
+  type ClientMsg, type GameState, type PublicCell, type ServerMsg, type Side,
 } from '@jieqi/shared';
 
 const PORT = 3191;
@@ -268,83 +268,61 @@ async function main() {
   u2.drain();
 
   console.log('— 暗子被吃的保密视角 / 悔棋恢复暗面 —');
-  const p1 = await Client.connect();
-  p1.send({ t: 'create', nick: '保密甲', opts: { baseMin: 1, incSec: 0 } });
-  const jp1 = (await p1.next((m) => m.t === 'joined')) as Extract<ServerMsg, { t: 'joined' }>;
-  const p2 = await Client.connect();
-  p2.send({ t: 'join', room: jp1.room, nick: '保密乙' });
-  await p2.next((m) => m.t === 'joined');
-  const startState = (await p1.next((m) => m.t === 'state' && m.state.phase === 'playing')) as Extract<ServerMsg, { t: 'state' }>;
+  for (const capturer of ['red', 'black'] as Side[]) {
+    const victim: Side = capturer === 'red' ? 'black' : 'red';
+    const red = await Client.connect();
+    red.send({ t: 'create', nick: '保密红方', opts: { baseMin: 1, incSec: 0 } });
+    const jr = (await red.next((m) => m.t === 'joined')) as Extract<ServerMsg, { t: 'joined' }>;
+    const black = await Client.connect();
+    black.send({ t: 'join', room: jr.room, nick: '保密黑方' });
+    const jb = (await black.next((m) => m.t === 'joined')) as Extract<ServerMsg, { t: 'joined' }>;
+    await red.next((m) => m.t === 'state' && m.state.phase === 'playing');
+    const players = { red, black };
+    const tokens = { red: jr.token, black: jb.token };
 
-  // 随机走子,直到出现"吃掉对方未翻开暗子"的一步
-  let pcur = startState.state;
-  let pcur2: GameState | null = null;
-  let darkCaptureTo = -1;
-  let darkCapturer: 'p1' | 'p2' = 'p1';
-  for (let round = 0; round < 120 && pcur.phase === 'playing' && darkCaptureTo < 0; round++) {
-    const side = pcur.turn;
-    const who = side === 'red' ? p1 : p2;
-    const board = boardFromView(pcur.cells);
-    const moves: [number, number][] = [];
-    let darkCap: [number, number] | null = null;
-    for (let i = 0; i < 90; i++) {
-      for (const t of legalTargets(board, side, i)) {
-        moves.push([i, t]);
-        const dst = pcur.cells[t];
-        if (dst && dst.side !== side && !dst.revealed) darkCap = [i, t];
-      }
+    // 固定合法着法:炮位暗子隔另一枚炮位暗子吃马位暗子,不依赖洗子结果。
+    if (capturer === 'black') {
+      red.send({ t: 'move', from: 54, to: 45 }); // 红兵位暗子先走一步,轮到黑方。
+      await red.next((m) => m.t === 'state' && m.state.moveNum === 1);
+      await black.next((m) => m.t === 'state' && m.state.moveNum === 1);
     }
-    if (moves.length === 0) break;
-    const pick = darkCap ?? moves[Math.floor(Math.random() * moves.length)]!;
-    if (darkCap) { darkCaptureTo = darkCap[1]; darkCapturer = side === 'red' ? 'p1' : 'p2'; }
-    who.send({ t: 'move', from: pick[0], to: pick[1] });
-    const inc = pcur.moveNum + 1;
-    const m1 = await Promise.race([
-      p1.next((m) => m.t === 'state' && m.state.moveNum === inc),
-      p1.next((m) => m.t === 'error').then((e) => {
-        throw new Error(`p1 move 被拒: ${(e as { code: string }).code}`);
-      }),
-    ]) as Extract<ServerMsg, { t: 'state' }>;
-    const m2 = (await p2.next((m) => m.t === 'state' && m.state.moveNum === inc)) as Extract<ServerMsg, { t: 'state' }>;
-    pcur = m1.state;
-    pcur2 = m2.state;
-    assertRedacted(`保密局第${inc}步`, pcur);
-  }
-  ok(darkCaptureTo >= 0 && !!pcur2, '随机对局中出现吃暗子');
+    const from = capturer === 'red' ? 64 : 19;
+    const to = capturer === 'red' ? 1 : 82;
+    const moveNum = capturer === 'red' ? 1 : 2;
+    players[capturer].send({ t: 'move', from, to });
+    const taken = (await players[capturer].next((m) => m.t === 'state' && m.state.moveNum === moveNum)) as Extract<ServerMsg, { t: 'state' }>;
+    const lost = (await players[victim].next((m) => m.t === 'state' && m.state.moveNum === moveNum)) as Extract<ServerMsg, { t: 'state' }>;
+    const capturedType = taken.state.captured.mine[0]?.type;
+    ok(!!capturedType && 'RNCABP'.includes(capturedType), `${capturer}: 吃子方看到被吃暗子的真实身份`);
+    ok(lost.state.captured.theirs.length === 1 && lost.state.captured.theirs[0]!.type === null,
+      `${victim}: 被吃方只看到遮罩背面(type 保密为 null)`);
+    assertRedacted(`${capturer} 吃子方棋盘`, taken.state);
+    assertRedacted(`${victim} 被吃方棋盘`, lost.state);
 
-  if (darkCaptureTo >= 0 && pcur2) {
-    const capMine = pcur.captured.mine;
-    const capTheirs = pcur2.captured.theirs;
-    const capViewMine = darkCapturer === 'p1' ? capMine : capTheirs;
-    const capViewTheirs = darkCapturer === 'p1' ? capTheirs : capMine;
-    const capEntryMine = capViewMine[capViewMine.length - 1]!;
-    const capEntryTheirs = capViewTheirs[capViewTheirs.length - 1]!;
-    ok(capEntryMine.type !== null, '吃子方看到被吃暗子的真实身份');
-    ok(capEntryTheirs.type === null, '被吃方只看到遮罩背面(type 保密为 null)');
+    for (const side of [capturer, victim]) {
+      players[side].close();
+      players[side] = await Client.connect();
+      players[side].send({ t: 'join', room: jr.room, token: tokens[side] });
+      const rejoined = (await players[side].next((m) => m.t === 'joined')) as Extract<ServerMsg, { t: 'joined' }>;
+      const expected = side === capturer ? taken.state.captured : lost.state.captured;
+      ok(rejoined.you === side && JSON.stringify(rejoined.state.captured) === JSON.stringify(expected),
+        `${side}: 重连保留各自的吃子可见性`);
+      assertRedacted(`${side} 重连棋盘`, rejoined.state);
+    }
 
-    // 悔棋:被吃暗子恢复为背面(撤销吃子方的着法)
-    const undoCli = darkCapturer === 'p1' ? p1 : p2;
-    const otherCli = darkCapturer === 'p1' ? p2 : p1;
-    undoCli.send({ t: 'undo_request' });
-    await otherCli.next((m) => m.t === 'state' && !!m.state.pendingUndo);
-    otherCli.send({ t: 'undo_accept' });
-    const ru1 = (await p1.next((m) => m.t === 'state' && m.state.moveNum === pcur.moveNum - 1)) as Extract<ServerMsg, { t: 'state' }>;
-    const ru2 = (await p2.next((m) => m.t === 'state' && m.state.moveNum === pcur.moveNum - 1)) as Extract<ServerMsg, { t: 'state' }>;
-    const cellBack1 = ru1.state.cells[darkCaptureTo]!;
-    const cellBack2 = ru2.state.cells[darkCaptureTo]!;
-    ok(
-      cellBack1 !== null && !cellBack1.revealed && cellBack2 !== null && !cellBack2.revealed,
-      '悔棋后被吃暗子恢复为背面(双方视图一致)',
-    );
-    ok(
-      ru1.state.captured.mine.length === 0 && ru2.state.captured.theirs.length === 0,
-      '悔棋后吃子清单同步清空',
-    );
-  } else {
-    ok(false, '120 步内未出现吃暗子(极低概率)');
+    players[capturer].send({ t: 'undo_request' });
+    await players[victim].next((m) => m.t === 'state' && m.state.pendingUndo === capturer);
+    players[victim].send({ t: 'undo_accept' });
+    for (const side of [capturer, victim]) {
+      const restored = (await players[side].next((m) => m.t === 'state' && m.state.moveNum === moveNum - 1)) as Extract<ServerMsg, { t: 'state' }>;
+      const cell = restored.state.cells[to];
+      ok(!!cell && !cell.revealed && !('type' in cell), `${side}: 悔棋后被吃暗子恢复背面且不泄露身份`);
+      ok(restored.state.captured.mine.length === 0 && restored.state.captured.theirs.length === 0,
+        `${side}: 悔棋移除对应吃子记录`);
+    }
+    players.red.close();
+    players.black.close();
   }
-  p1.close();
-  p2.close();
 
   console.log('— 房主解散 / 权限校验 —');
   u1.send({ t: 'dissolve' });
