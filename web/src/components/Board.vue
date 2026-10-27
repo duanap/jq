@@ -26,6 +26,11 @@ watch(
 const myTurn = computed(
   () => props.state.phase === 'playing' && props.you !== null && props.state.turn === props.you,
 );
+const turnText = computed(() => {
+  if (!props.you) return '当前行棋方';
+  if (!myTurn.value) return '等待对方走子';
+  return props.state.check ? '轮到你走子 · 请应将' : '轮到你走子';
+});
 
 function tap(i: number) {
   if (!myTurn.value) return;
@@ -64,15 +69,7 @@ function label(p: { side: Side; revealed: boolean; type?: string }): string {
   return p.revealed && p.type ? CHARS[p.side][p.type] : '';
 }
 
-// ---------- 楚河横幅(3 秒自动消失)与将军/绝杀特效 ----------
-const banner = ref<{ text: string; tone: string } | null>(null);
-let bannerTimer: ReturnType<typeof setTimeout> | null = null;
-function showBanner(text: string, tone = 'turn', ms = 3000) {
-  banner.value = { text, tone };
-  if (bannerTimer) clearTimeout(bannerTimer);
-  bannerTimer = setTimeout(() => (banner.value = null), ms);
-}
-
+// ---------- 将军/绝杀特效 ----------
 const fx = ref<string | null>(null);
 let fxTimer: ReturnType<typeof setTimeout> | null = null;
 function showFx(text: string, ms = 1900) {
@@ -81,14 +78,6 @@ function showFx(text: string, ms = 1900) {
   fxTimer = setTimeout(() => (fx.value = null), ms);
 }
 
-watch(
-  () => props.state.turn,
-  () => {
-    if (props.state.phase === 'playing' && props.state.turn === props.you) {
-      showBanner(props.state.check ? '轮到你 · 将军!' : '轮到你走子');
-    }
-  },
-);
 watch(
   () => props.state.check,
   (c, was) => {
@@ -266,8 +255,13 @@ const LINES: [number, number, number, number][] = (() => {
         />
       </svg>
 
-      <div v-if="banner" class="river-banner" :class="banner.tone">{{ banner.text }}</div>
       <div v-if="fx" class="fx"><span>{{ fx }}</span></div>
+    </div>
+
+    <div v-if="state.phase === 'playing'" class="turn-indicator" :class="{ active: myTurn, danger: myTurn && state.check }" role="status" aria-live="polite" aria-atomic="true">
+      <span class="turn-dot" aria-hidden="true"></span>
+      <span>{{ turnText }}</span>
+      <span class="turn-side">{{ state.turn === 'red' ? '红方' : '黑方' }}</span>
     </div>
 
     <div class="tray right">
@@ -292,7 +286,7 @@ const LINES: [number, number, number, number][] = (() => {
   gap: 6px;
   justify-content: center;
   align-items: center;
-  grid-template-areas: 'top' 'board' 'bottom';
+  grid-template-areas: 'top' 'board' 'turn' 'bottom';
   grid-template-columns: min-content;
   padding: 4px 8px;
 }
@@ -301,19 +295,21 @@ const LINES: [number, number, number, number][] = (() => {
 .tray.left, .tray.right { display: none; }
 .tray {
   display: flex;
-  gap: 3px;
-  overflow: hidden;
+  gap: 10px;
+  padding: 8px 10px 2px 2px;
+  overflow: visible;
 }
 .tray.top, .tray.bottom {
   flex-direction: row;
+  flex-wrap: wrap;
   max-width: var(--bw);
-  min-height: 30px;
+  min-height: 40px;
 }
 /* PC/横屏:托盘放两侧,棋盘更大 */
 @media (orientation: landscape) {
   .board-wrap {
-    --bw: min(calc(100vw - 250px), calc((100vh - 215px) * 0.9), 640px);
-    grid-template-areas: 'left board right';
+    --bw: min(calc(100vw - 250px), calc((100vh - 255px) * 0.9), 640px);
+    grid-template-areas: 'left board right' '. turn .';
     grid-template-columns: min-content min-content min-content;
   }
   .tray.top, .tray.bottom { display: none; }
@@ -321,10 +317,50 @@ const LINES: [number, number, number, number][] = (() => {
     display: flex;
     flex-direction: column;
     max-height: calc(var(--bw) * 10 / 9);
-    min-width: 30px;
+    min-width: 42px;
+    overflow-x: hidden;
+    overflow-y: auto;
   }
   .tray.left { grid-area: left; }
   .tray.right { grid-area: right; }
+}
+.turn-indicator {
+  grid-area: turn;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 36px;
+  width: var(--bw);
+  padding: 7px 12px;
+  border: 1px solid #3a4356;
+  border-radius: 9px;
+  background: #202734;
+  color: #bdc6d6;
+  font-size: 14px;
+  font-weight: 600;
+}
+.turn-indicator.active {
+  color: #ffe09a;
+  background: #332c1c;
+  border-color: #80682d;
+}
+.turn-indicator.danger {
+  color: #ffaca4;
+  background: #382321;
+  border-color: #985047;
+}
+.turn-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+}
+.turn-side {
+  padding-left: 8px;
+  border-left: 1px solid currentColor;
+  font-size: 12px;
 }
 .board {
   grid-area: board;
@@ -509,15 +545,25 @@ const LINES: [number, number, number, number][] = (() => {
 }
 .mini i {
   position: absolute;
-  top: -5px;
+  top: -6px;
   right: -7px;
-  background: #d6451e;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  border: 2px solid #161b24;
+  background: #bc301b;
   color: #fff;
   font-style: normal;
-  font-size: 10px;
+  font-size: 12px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
   line-height: 1;
-  padding: 2px 4px;
-  border-radius: 8px;
+  padding: 0 4px;
+  border-radius: 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
   font-family: system-ui, sans-serif;
 }
 /* 被对方吃掉的暗子:对我保密,仅显示带遮罩的背面 */
@@ -532,35 +578,6 @@ const LINES: [number, number, number, number][] = (() => {
   border-radius: 50%;
   background: rgba(30, 25, 15, 0.42);
   border: 1px solid rgba(90, 60, 20, 0.4);
-}
-.river-banner {
-  position: absolute;
-  left: 50%;
-  top: 41%;
-  transform: translate(-50%, -50%);
-  z-index: 15;
-  padding: 8px 26px;
-  border-radius: 999px;
-  background: rgba(30, 25, 15, 0.78);
-  color: #ffd97a;
-  font-size: calc(var(--bw) * 0.052);
-  font-weight: 700;
-  letter-spacing: 2px;
-  border: 1px solid rgba(255, 217, 122, 0.5);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-  pointer-events: none;
-  white-space: nowrap;
-  animation: banner-in 0.3s ease;
-}
-.river-banner.danger {
-  color: #ff9d94;
-  border-color: rgba(255, 120, 110, 0.6);
-}
-@keyframes banner-in {
-  from {
-    opacity: 0;
-    transform: translate(-50%, -50%) translateY(-8px);
-  }
 }
 .fx {
   position: absolute;

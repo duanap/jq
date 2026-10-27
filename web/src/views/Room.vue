@@ -3,9 +3,11 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { net } from '../net';
 import { leaveRoom, showToast, store } from '../store';
 import Board from '../components/Board.vue';
+import { useClocks } from '../clocks';
 
 const st = computed(() => store.state);
 const you = computed(() => store.you);
+const clocks = useClocks(st);
 const link = computed(() => `${location.origin}/?r=${store.room}`);
 const menuOpen = ref(false);
 
@@ -36,14 +38,12 @@ function seatOf(side: 'me' | 'opp') {
 }
 const oppOnline = computed(() => !!seatOf('opp')?.online);
 const oppClock = computed(() => {
-  const s = st.value;
-  if (!s?.clocks || !you.value) return undefined;
-  return you.value === 'red' ? s.clocks.black : s.clocks.red;
+  if (!clocks.value || !you.value) return undefined;
+  return clocks.value[you.value === 'red' ? 'black' : 'red'];
 });
 const myClock = computed(() => {
-  const s = st.value;
-  if (!s?.clocks || !you.value) return undefined;
-  return you.value === 'red' ? s.clocks.red : s.clocks.black;
+  if (!clocks.value || !you.value) return undefined;
+  return clocks.value[you.value];
 });
 
 const resultText = computed(() => {
