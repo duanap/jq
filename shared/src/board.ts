@@ -1,4 +1,4 @@
-import type { Board, PieceType, Side } from './types';
+import type { Board, Cell, GameMode, PieceType, Side } from './types';
 
 export const ROWS = 10;
 export const COLS = 9;
@@ -49,3 +49,8 @@ export const inPalace = (i: number, s: Side) =>
   colOf(i) >= 3 && colOf(i) <= 5 && (s === 'red' ? rowOf(i) >= 7 : rowOf(i) <= 2);
 export const ownHalf = (i: number, s: Side) => (s === 'red' ? rowOf(i) >= 5 : rowOf(i) <= 4);
 export const crossedRiver = (i: number, s: Side) => !ownHalf(i, s);
+
+/** 乱阵暗子翻开之前按开局棋位所属的一侧行动。 */
+export function playingSide(piece: Cell, from: number, mode: GameMode = 'classic'): Side {
+  return mode === 'shuffle' && !piece.revealed ? (ownHalf(from, 'red') ? 'red' : 'black') : piece.side;
+}

@@ -1,6 +1,9 @@
 <script setup lang="ts">
+import { ref } from 'vue';
+import type { GameMode } from '@jieqi/shared';
 import { store, createRoom, joinRoom } from '../store';
 
+const mode = ref<GameMode>('classic');
 const codeOk = () => /^\d{6}$/.test(store.joinCode.trim());
 </script>
 
@@ -19,7 +22,7 @@ const codeOk = () => /^\d{6}$/.test(store.joinCode.trim());
         maxlength="12"
         autocomplete="off"
         placeholder="给自己起个名字"
-        @keyup.enter="store.joinCode ? joinRoom() : createRoom()"
+        @keyup.enter="store.joinCode ? joinRoom() : createRoom(mode)"
       />
       <label>房号(加入时填写,留空则创建新局)</label>
       <input
@@ -33,8 +36,14 @@ const codeOk = () => /^\d{6}$/.test(store.joinCode.trim());
         placeholder="6 位数字房号"
         @keyup.enter="codeOk() && joinRoom()"
       />
+      <label for="room-mode">建房玩法</label>
+      <select id="room-mode" v-model="mode">
+        <option value="classic">经典揭棋</option>
+        <option value="shuffle">乱阵揭棋</option>
+      </select>
+      <p v-if="mode === 'shuffle'" class="mode-hint">暗子按本方开局棋位走，可吃同侧暗子。落点棋子和被吃暗子的阵营、兵种都会公开。</p>
       <div class="btns">
-        <button class="primary" @click="createRoom">创建房间</button>
+        <button class="primary" @click="createRoom(mode)">创建房间</button>
         <button :disabled="!codeOk()" @click="joinRoom">加入房间</button>
       </div>
       <p class="tip">创建后把邀请链接发给对方,对方打开即同局对战</p>
@@ -111,6 +120,21 @@ h1 {
   font-size: 12px;
   color: #8a94a8;
   margin-top: 6px;
+}
+.panel select {
+  width: 100%;
+  min-height: 42px;
+  padding: 8px 10px;
+  border: 1px solid #3a4356;
+  border-radius: 9px;
+  background: #161b24;
+  color: #e8e4da;
+  color-scheme: dark;
+  font: inherit;
+}
+.mode-hint {
+  color: #bdc6d6;
+  font-size: 13px;
 }
 .btns {
   display: flex;

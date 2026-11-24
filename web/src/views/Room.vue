@@ -146,6 +146,7 @@ const undoDisabled = computed(() => {
   if (!s || !you.value) return true;
   if (s.phase !== 'playing' || s.moveNum === 0) return true;
   if (s.pendingUndo) return true;
+  if (s.undoable === false) return true;
   return s.turn === you.value; // 自己是最后一着 = 对方还没回手
 });
 const undoLabel = computed(() => (st.value?.pendingUndo === you.value ? '等待对方同意…' : '悔棋'));
@@ -159,7 +160,7 @@ function onUndo() {
   <div class="room" v-if="st">
     <header>
       <button class="ghost" @click="exitRoom">{{ isOwner ? '解散' : '退出' }}</button>
-      <div class="code">房号 <b>{{ store.room }}</b></div>
+      <div class="code">房号 <b>{{ store.room }}</b><span v-if="st.mode === 'shuffle'" class="mode-label">乱阵揭棋</span></div>
       <div class="menu-wrap">
         <button class="ghost" @click="menuOpen = !menuOpen">更多 ▾</button>
         <div class="menu" v-if="menuOpen">
@@ -270,6 +271,12 @@ header {
   color: #e8e4da;
   letter-spacing: 2px;
   font-size: 16px;
+}
+.mode-label {
+  display: block;
+  text-align: center;
+  color: #ae9b6c;
+  font-size: 12px;
 }
 .menu-wrap {
   position: relative;

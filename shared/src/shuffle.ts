@@ -22,3 +22,13 @@ export function shuffleBoard(): Board {
   }
   return b;
 }
+
+/** 保持常规开局位置，把双方的暗子混在同一个池里洗。 */
+export function shuffleMixedBoard(): Board {
+  const board = initialBoard();
+  const squares = board.flatMap((piece, index) => piece && piece.trueType !== 'K' ? [index] : []);
+  const pieces = squares.map((square) => ({ ...board[square]!, revealed: false }));
+  shuffleInPlace(pieces);
+  squares.forEach((square, index) => { board[square] = pieces[index]!; });
+  return board;
+}

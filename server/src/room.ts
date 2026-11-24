@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { WebSocket } from 'ws';
 import { JieqiGame, inCheck, other, publicView } from '@jieqi/shared';
-import type { GameResult, GameState, PieceType, Side, TimeOpts } from '@jieqi/shared';
+import type { CapturedPiece, GameMode, GameResult, GameState, PieceType, Side, TimeOpts } from '@jieqi/shared';
 import { ABANDON_MS, STALE_MS } from './config';
 import { appendRecord } from './store';
 import { sendWS } from './send';
@@ -24,16 +24,16 @@ interface ClockState {
 export class Room {
   readonly code: string;
   opts: Required<TimeOpts>;
-  game = new JieqiGame();
+  game: JieqiGame;
   seats: { red?: Seat; black?: Seat } = {};
   private seq = 0;
   drawOffer?: Side;
   rematch: { red: boolean; black: boolean } = { red: false, black: false };
   lastEvent?: { from: number; to: number; capture: boolean; reveal?: { pos: number; type: PieceType } };
-  /** 吃子真相:red/black 各自吃到的子;hidden = 被吃时是暗子(仅吃子方知道身份) */
+  /** red/black 各自吃到的子，hidden 表示被吃时未翻开。 */
   captured: {
-    red: { type: PieceType; hidden: boolean }[];
-    black: { type: PieceType; hidden: boolean }[];
+    red: { type: PieceType; side: Side; hidden: boolean }[];
+    black: { type: PieceType; side: Side; hidden: boolean }[];
   } = { red: [], black: [] };
   /** 待处理的悔棋请求方 */
   pendingUndo?: Side;
@@ -42,8 +42,9 @@ export class Room {
   lastActivity = Date.now();
   private recorded = false;
 
-  constructor(code: string, opts: TimeOpts) {
+  constructor(code: string, opts: TimeOpts, readonly mode: GameMode = 'classic') {
     this.code = code;
+    this.game = new JieqiGame(undefined, mode);
     this.opts = { baseMin: opts.baseMin ?? 10, incSec: opts.incSec ?? 3 };
     this.clock = this.opts.baseMin > 0 ? { red: { ms: 0, turnStart: 0 }, black: { ms: 0, turnStart: 0 } } : null;
   }
@@ -85,23 +86,27 @@ export class Room {
   snapshot(viewer: Side): GameState {
     const g = this.game;
     const info = (s?: Seat) => (s ? { nick: s.nick, online: !!s.conn } : null);
-    // 吃子按接收者视角:我吃的可见身份;对方吃的暗子对我是保密项(仅显示背面)
-    const mine = this.captured[viewer].map((e) => ({ type: e.type as PieceType | null }));
-    const theirs = this.captured[other(viewer)].map((e) => ({ type: (e.hidden ? null : e.type) as PieceType | null }));
+    // 经典仅吃子方看到暗子身份，乱阵则向双方公开并附上真实阵营。
+    const mine: CapturedPiece[] = this.captured[viewer].map(({ type, side }) =>
+      this.mode === 'shuffle' ? { type, side } : { type });
+    const theirs: CapturedPiece[] = this.captured[other(viewer)].map(({ type, side, hidden }) =>
+      this.mode === 'shuffle' ? { type, side } : { type: hidden ? null : type });
     return {
       phase: this.phaseOf(),
+      mode: this.mode,
       seats: { red: info(this.seats.red), black: info(this.seats.black) },
-      cells: publicView(g.board),
+      cells: publicView(g.board, this.mode),
       turn: g.turn,
       moveNum: g.ply,
       lastMove: this.lastEvent ? { from: this.lastEvent.from, to: this.lastEvent.to } : undefined,
-      check: g.status === 'playing' ? inCheck(g.board, g.turn) : false,
+      check: g.status === 'playing' ? inCheck(g.board, g.turn, this.mode) : false,
       reveal: this.lastEvent?.reveal,
       capture: this.lastEvent?.capture,
       clocks: this.clock ? { red: this.remaining('red'), black: this.remaining('black') } : null,
       captured: { mine, theirs },
       owner: this.ownerSide(),
       pendingUndo: this.pendingUndo,
+      undoable: this.mode === 'shuffle' ? g.canUndoLast() : undefined,
       drawOffer: this.drawOffer,
       rematch: { ...this.rematch },
       result: g.result,
@@ -165,7 +170,9 @@ export class Room {
       capture: mv.capture,
       reveal: mv.reveal ? { pos: to, type: mv.reveal } : undefined,
     };
-    if (mv.capturedType) this.captured[side]!.push({ type: mv.capturedType, hidden: !!mv.capturedWasDark });
+    if (mv.capturedType && mv.capturedSide) {
+      this.captured[side].push({ type: mv.capturedType, side: mv.capturedSide, hidden: !!mv.capturedWasDark });
+    }
     this.touch();
     if (this.game.status === 'over') this.finish(this.game.result!);
     else this.broadcast();
@@ -204,6 +211,7 @@ export class Room {
     if (this.phaseOf() !== 'playing') return 'not_playing';
     const last = this.game.history[this.game.history.length - 1];
     if (!last || last.by !== side) return 'no_undo';
+    if (!this.game.canUndoLast()) return 'no_undo_reveal';
     if (this.pendingUndo) return 'undo_pending';
     this.pendingUndo = side;
     this.broadcast();
@@ -220,6 +228,13 @@ export class Room {
       return 'no_undo';
     }
     if (last?.capturedType) this.captured[requester]!.pop(); // 悔棋同步移除吃子记录
+    if (this.mode === 'shuffle') {
+      const previous = this.game.history[this.game.history.length - 1];
+      this.lastEvent = previous && {
+        from: previous.from, to: previous.to, capture: previous.capture,
+        reveal: previous.reveal ? { pos: previous.to, type: previous.reveal } : undefined,
+      };
+    }
     this.pendingUndo = undefined;
     this.drawOffer = undefined;
     // 被悔棋方恢复行棋,其计时从现在起算
@@ -285,7 +300,9 @@ export class Room {
     this.seats = { red: black, black: red };
     black.side = 'red';
     red.side = 'black';
-    this.game = new JieqiGame();
+    if (black.conn) this.attach(black, black.conn);
+    if (red.conn) this.attach(red, red.conn);
+    this.game = new JieqiGame(undefined, this.mode);
     this.rematch = { red: false, black: false };
     this.drawOffer = undefined;
     this.pendingUndo = undefined;
@@ -317,6 +334,7 @@ export class Room {
       this.recorded = true;
       void appendRecord({
         room: this.code,
+        mode: this.mode,
         opts: this.opts,
         startedAt: this.startedAt,
         endedAt: Date.now(),

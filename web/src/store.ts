@@ -1,5 +1,5 @@
 import { reactive } from 'vue';
-import type { GameState, ServerMsg, Side } from '@jieqi/shared';
+import type { GameMode, GameState, ServerMsg, Side } from '@jieqi/shared';
 import { net } from './net';
 
 export const store = reactive({
@@ -22,11 +22,11 @@ export function showToast(msg: string) {
   toastTimer = setTimeout(() => (store.toast = ''), 3000);
 }
 
-export function createRoom() {
+export function createRoom(mode: GameMode = 'classic') {
   const nick = store.nick.trim();
   if (!nick) return showToast('先填个昵称');
   localStorage.setItem('jieqi.nick', nick);
-  net.send({ t: 'create', nick });
+  net.send({ t: 'create', nick, mode });
 }
 
 export function joinRoom() {
@@ -76,6 +76,7 @@ function errorText(code: string): string {
     not_over: '对局还没结束',
     draw_pending: '已有和棋请求待处理',
     no_draw_offer: '没有待处理的和棋请求',
+    no_undo_reveal: '乱阵揭棋中，揭开暗子身份的一步不能悔棋',
     bad_move: '走法格式错误',
   };
   return map[code] ?? `出错:${code}`;

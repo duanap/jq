@@ -29,7 +29,7 @@ function schedule() {
     const board = boardFromView(state.cells);
     const moves: [number, number][] = [];
     for (let i = 0; i < 90; i++) {
-      for (const t of legalTargets(board, mySide, i)) moves.push([i, t]);
+      for (const t of legalTargets(board, mySide, i, state.mode)) moves.push([i, t]);
     }
     if (!moves.length || state.phase !== 'playing') return;
     const [from, to] = moves[Math.floor(Math.random() * moves.length)]!;

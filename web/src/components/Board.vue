@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { boardFromView, legalTargets } from '@jieqi/shared';
-import type { GameState, PieceType, Side } from '@jieqi/shared';
+import { boardFromView, canControl, legalTargets } from '@jieqi/shared';
+import type { CapturedPiece, GameState, PieceType, Side } from '@jieqi/shared';
 import { CHARS } from '../pieces';
 
 const props = defineProps<{ state: GameState; you: Side | null }>();
@@ -33,26 +33,28 @@ const turnText = computed(() => {
 });
 
 function tap(i: number) {
-  if (!myTurn.value) return;
+  const side = props.you;
+  if (!myTurn.value || !side) return;
+  // 乱阵允许吃同侧暗子，已亮起的落点优先于重新选子。
+  if (selected.value !== null && targets.value.includes(i)) {
+    emit('move', selected.value, i);
+    selected.value = null;
+    targets.value = [];
+    return;
+  }
   const p = board.value[i];
-  if (p && p.side === props.you) {
+  if (p && canControl(p, i, side, props.state.mode)) {
     if (selected.value === i) {
       selected.value = null;
       targets.value = [];
     } else {
       selected.value = i;
-      targets.value = legalTargets(board.value, props.you!, i);
+      targets.value = legalTargets(board.value, side, i, props.state.mode);
     }
     return;
   }
-  if (selected.value !== null && targets.value.includes(i)) {
-    emit('move', selected.value, i);
-    selected.value = null;
-    targets.value = [];
-  } else {
-    selected.value = null;
-    targets.value = [];
-  }
+  selected.value = null;
+  targets.value = [];
 }
 
 /** 视角:黑方玩家棋盘旋转 180°,自己的子永远在下方 */
@@ -65,8 +67,8 @@ function styleOf(i: number) {
   return { left: `${((50 + c * 100) / 9).toFixed(3)}%`, top: `${((50 + r * 100) / 10).toFixed(3)}%` };
 }
 
-function label(p: { side: Side; revealed: boolean; type?: string }): string {
-  return p.revealed && p.type ? CHARS[p.side][p.type] : '';
+function pieceColor(side?: Side) {
+  return side === 'black' && props.state.mode === 'shuffle' ? 'blue' : side;
 }
 
 // ---------- 将军/绝杀特效 ----------
@@ -145,24 +147,23 @@ const arrow = computed(() => {
   return { x1, y1, ex: x2 - (dx / len) * trim, ey: y2 - (dy / len) * trim };
 });
 
-/** 吃子托盘:同类合并计数,按被吃先后排列(先被吃在前)。
- *  屏幕上方/左侧 = 对方吃到的我的子(其中暗子被吃对我保密,只显示遮罩背面);
- *  下方/右侧 = 我吃到的对方的子(可见真实身份) */
+const mySide = computed<Side>(() => (props.you === 'black' ? 'black' : 'red'));
+const oppSide = computed<Side>(() => (props.you === 'black' ? 'red' : 'black'));
+
+/** 同阵营、同兵种合并计数，按第一次被吃的先后排列。 */
 const capturedGroups = computed(() => {
   const cap = props.state.captured ?? { mine: [], theirs: [] };
-  const group = (entries: { type: PieceType | null }[]) => {
-    const out: { type: PieceType | null; n: number }[] = [];
-    for (const { type } of entries) {
-      const g = out.find((o) => o.type === type);
+  const group = (entries: CapturedPiece[], fallback: Side) => {
+    const out: { type: PieceType | null; side: Side; n: number }[] = [];
+    for (const { type, side = fallback } of entries) {
+      const g = out.find((o) => o.type === type && o.side === side);
       if (g) g.n += 1;
-      else out.push({ type, n: 1 });
+      else out.push({ type, side, n: 1 });
     }
     return out;
   };
-  return { opp: group(cap.theirs), mine: group(cap.mine) };
+  return { opp: group(cap.theirs, mySide.value), mine: group(cap.mine, oppSide.value) };
 });
-const mySide = computed<Side>(() => (props.you === 'black' ? 'black' : 'red'));
-const oppSide = computed<Side>(() => (props.you === 'black' ? 'red' : 'black'));
 
 const LINES: [number, number, number, number][] = (() => {
   const L: [number, number, number, number][] = [];
@@ -182,14 +183,14 @@ const LINES: [number, number, number, number][] = (() => {
 <template>
   <div class="board-wrap">
     <div class="tray top">
-      <div v-for="(g, gi) in capturedGroups.opp" :key="'bt' + gi" class="mini" :class="g.type ? mySide : 'masked'">
-        <span v-if="g.type">{{ CHARS[mySide][g.type] }}</span>
+      <div v-for="(g, gi) in capturedGroups.opp" :key="'bt' + gi" class="mini" :class="g.type ? pieceColor(g.side) : 'masked'">
+        <span v-if="g.type">{{ CHARS[g.side][g.type] }}</span>
         <i v-if="g.n > 1">{{ g.n }}</i>
       </div>
     </div>
     <div class="tray left">
-      <div v-for="(g, gi) in capturedGroups.opp" :key="'bl' + gi" class="mini" :class="g.type ? mySide : 'masked'">
-        <span v-if="g.type">{{ CHARS[mySide][g.type] }}</span>
+      <div v-for="(g, gi) in capturedGroups.opp" :key="'bl' + gi" class="mini" :class="g.type ? pieceColor(g.side) : 'masked'">
+        <span v-if="g.type">{{ CHARS[g.side][g.type] }}</span>
         <i v-if="g.n > 1">{{ g.n }}</i>
       </div>
     </div>
@@ -220,11 +221,11 @@ const LINES: [number, number, number, number][] = (() => {
         <div
           v-if="p"
           class="piece"
-          :class="[p.side, { dark: !p.revealed, sel: selected === i, chk: i === kingInCheck, flip: flipping === i, deal: dealing }]"
+          :class="[pieceColor(p.side), { dark: !p.revealed, sel: selected === i, chk: i === kingInCheck, flip: flipping === i, deal: dealing }]"
           :style="dealing ? { ...styleOf(i), animationDelay: dealDelay(i) } : styleOf(i)"
           @pointerdown.stop.prevent="tap(i)"
         >
-          <span v-if="p.revealed">{{ label(p) }}</span>
+          <span v-if="p.revealed">{{ CHARS[p.side][p.type] }}</span>
         </div>
       </template>
 
@@ -261,18 +262,18 @@ const LINES: [number, number, number, number][] = (() => {
     <div v-if="state.phase === 'playing'" class="turn-indicator" :class="{ active: myTurn, danger: myTurn && state.check }" role="status" aria-live="polite" aria-atomic="true">
       <span class="turn-dot" aria-hidden="true"></span>
       <span>{{ turnText }}</span>
-      <span class="turn-side">{{ state.turn === 'red' ? '红方' : '黑方' }}</span>
+      <span class="turn-side">{{ state.turn === 'red' ? '红方' : state.mode === 'shuffle' ? '蓝方' : '黑方' }}</span>
     </div>
 
     <div class="tray right">
-      <div v-for="(g, gi) in capturedGroups.mine" :key="'br' + gi" class="mini" :class="oppSide">
-        <span v-if="g.type">{{ CHARS[oppSide][g.type] }}</span>
+      <div v-for="(g, gi) in capturedGroups.mine" :key="'br' + gi" class="mini" :class="pieceColor(g.side)">
+        <span v-if="g.type">{{ CHARS[g.side][g.type] }}</span>
         <i v-if="g.n > 1">{{ g.n }}</i>
       </div>
     </div>
     <div class="tray bottom">
-      <div v-for="(g, gi) in capturedGroups.mine" :key="'bb' + gi" class="mini" :class="oppSide">
-        <span v-if="g.type">{{ CHARS[oppSide][g.type] }}</span>
+      <div v-for="(g, gi) in capturedGroups.mine" :key="'bb' + gi" class="mini" :class="pieceColor(g.side)">
+        <span v-if="g.type">{{ CHARS[g.side][g.type] }}</span>
         <i v-if="g.n > 1">{{ g.n }}</i>
       </div>
     </div>
@@ -431,6 +432,9 @@ const LINES: [number, number, number, number][] = (() => {
 .piece.black {
   color: #26211d;
 }
+.piece.blue {
+  color: #174e92;
+}
 .piece span {
   position: relative;
   text-shadow: 0 1px 1px rgba(255, 255, 255, 0.65);
@@ -542,6 +546,10 @@ const LINES: [number, number, number, number][] = (() => {
 .mini.black {
   color: #26211d;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35), inset 0 0 0 1.5px rgba(38, 33, 29, 0.45);
+}
+.mini.blue {
+  color: #174e92;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35), inset 0 0 0 1.5px rgba(23, 78, 146, 0.65);
 }
 .mini i {
   position: absolute;

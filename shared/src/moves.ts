@@ -1,5 +1,5 @@
-import { colOf, crossedRiver, idx, inPalace, onBoard, ownHalf, posTypeOf, rowOf } from './board';
-import type { Board, PieceType } from './types';
+import { colOf, crossedRiver, idx, inPalace, onBoard, ownHalf, playingSide, posTypeOf, rowOf } from './board';
+import type { Board, GameMode, PieceType } from './types';
 
 export const ORTHO: [number, number][] = [[-1, 0], [1, 0], [0, -1], [0, 1]];
 export const DIAG1: [number, number][] = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
@@ -17,18 +17,20 @@ export function effectiveType(board: Board, from: number): PieceType {
 }
 
 /** 伪合法走法(不含自将过滤)。明士全盘斜走、明象可过河;暗士暗象仍受限。 */
-export function pseudoMoves(board: Board, from: number): number[] {
+export function pseudoMoves(board: Board, from: number, mode: GameMode = 'classic'): number[] {
   const p = board[from]!;
-  const type = p.revealed ? p.trueType : posTypeOf(from);
-  const dark = !p.revealed;
-  const side = p.side;
   const r0 = rowOf(from);
   const c0 = colOf(from);
+  const type = p.revealed ? p.trueType : posTypeOf(from);
+  const dark = !p.revealed;
+  const side = playingSide(p, from, mode);
   const out: number[] = [];
+  const canCapture = (target: NonNullable<Board[number]>) =>
+    (mode === 'shuffle' && (dark || !target.revealed)) || target.side !== side;
   const tryDest = (r: number, c: number) => {
     if (!onBoard(r, c)) return;
     const t = board[idx(r, c)];
-    if (!t || t.side !== side) out.push(idx(r, c));
+    if (!t || canCapture(t)) out.push(idx(r, c));
   };
 
   if (type === 'R') {
@@ -39,7 +41,7 @@ export function pseudoMoves(board: Board, from: number): number[] {
         if (!t) {
           out.push(idx(r, c));
         } else {
-          if (t.side !== side) out.push(idx(r, c));
+          if (canCapture(t)) out.push(idx(r, c));
           break;
         }
         r += dr; c += dc;
@@ -55,7 +57,7 @@ export function pseudoMoves(board: Board, from: number): number[] {
           if (!t) out.push(idx(r, c));
           else screen = true;
         } else if (t) {
-          if (t.side !== side) out.push(idx(r, c));
+          if (canCapture(t)) out.push(idx(r, c));
           break;
         }
         r += dr; c += dc;
@@ -73,7 +75,7 @@ export function pseudoMoves(board: Board, from: number): number[] {
       const r = r0 + dr, c = c0 + dc;
       if (!onBoard(r, c)) continue;
       if (board[idx(r0 + dr / 2, c0 + dc / 2)]) continue; // 塞象眼
-      if (dark && !ownHalf(idx(r, c), side)) continue; // 暗象不过河,明象自由
+      if (dark && mode === 'classic' && !ownHalf(idx(r, c), side)) continue;
       tryDest(r, c);
     }
   } else if (type === 'A') {

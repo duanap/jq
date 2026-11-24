@@ -120,7 +120,7 @@ function handle(ws: WebSocket, msg: ClientMsg) {
       return;
 
     case 'create': {
-      const room = createRoom(sanitizeOpts(m.opts));
+      const room = createRoom(sanitizeOpts(m.opts), m.mode === 'shuffle' ? 'shuffle' : 'classic');
       const seat = room.newSeat('red', sanitizeNick(m.nick));
       seat.isOwner = true;
       room.seats.red = seat;
@@ -269,6 +269,6 @@ setInterval(() => {
 // 僵死房间清扫(静默回收,不打扰正常对局)
 setInterval(() => sweepStale(Date.now()), 1000).unref();
 
-server.listen(PORT, () => {
+server.listen({ port: PORT, host: process.env.HOST }, () => {
   console.log(`[jieqi] 游戏服务已启动 :${PORT},静态目录 ${webDist}`);
 });

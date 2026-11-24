@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  attacksFrom, hasAnyLegalMove, inCheck, initialBoard, JieqiGame, kingsFacing,
-  legalTargets, posTypeOf, pseudoMoves, publicView, shuffleBoard,
+  attacksFrom, boardFromView, hasAnyLegalMove, inCheck, initialBoard, JieqiGame, kingsFacing,
+  legalTargets, posTypeOf, pseudoMoves, publicView, shuffleBoard, shuffleMixedBoard,
   type Board, type PieceType, type Side,
 } from '../src';
 
@@ -10,6 +10,51 @@ const empty = (): Board => new Array(90).fill(null);
 const put = (b: Board, i: number, side: Side, trueType: PieceType, revealed = true) => {
   b[i] = { side, trueType, revealed };
 };
+
+describe('乱阵揭棋', () => {
+  it('按常规棋位摆放，保持双方棋子总数及兵种，只公开帅将', () => {
+    const board = shuffleMixedBoard();
+    const standard = initialBoard();
+    expect(board.map(Boolean)).toEqual(standard.map(Boolean));
+    const inventory = (cells: Board) => cells.flatMap((p) => p ? [p.side + p.trueType] : []).sort();
+    expect(inventory(board)).toEqual(inventory(standard));
+    const view = publicView(board, 'shuffle');
+    expect(view.filter((p) => p?.revealed)).toEqual([
+      { side: 'black', type: 'K', revealed: true }, { side: 'red', type: 'K', revealed: true },
+    ]);
+    expect(view.filter((p) => p?.revealed === false)).toEqual(Array(30).fill({ revealed: false }));
+  });
+
+  it('本侧车位能吃同侧马位暗子，走完翻开时归真实阵营', () => {
+    const board = shuffleMixedBoard();
+    const rook = idx(9, 0), knight = idx(9, 1);
+    put(board, rook, 'black', 'C', false);
+    put(board, knight, 'red', 'P', false);
+    const game = new JieqiGame(board, 'shuffle');
+    expect(game.legalTargets(idx(0, 0))).toEqual([]);
+    expect(game.legalTargets(rook)).toContain(knight);
+    expect(legalTargets(boardFromView(publicView(board, 'shuffle')), 'red', rook, 'shuffle')).toEqual(game.legalTargets(rook));
+    expect(game.applyMove(rook, knight)).toMatchObject({ by: 'red', reveal: 'C', capturedSide: 'red', capturedType: 'P' });
+    expect(game.board[knight]).toEqual({ side: 'black', trueType: 'C', revealed: true });
+    expect(game.turn).toBe('black');
+    expect(game.undoLast()).toBe(false);
+  });
+
+  it('暗子跨过河界仍可按座位走法判断，明象能过河、兵不能后退', () => {
+    const board = empty();
+    put(board, idx(9, 4), 'red', 'K');
+    put(board, idx(0, 4), 'black', 'K');
+    put(board, idx(6, 4), 'black', 'N', false);
+    put(board, idx(9, 0), 'black', 'A', false);
+    expect(legalTargets(board, 'red', idx(9, 0), 'shuffle')).toContain(idx(3, 0));
+    put(board, idx(5, 2), 'red', 'B');
+    expect(pseudoMoves(board, idx(5, 2), 'shuffle')).toContain(idx(3, 0));
+    put(board, idx(5, 6), 'red', 'P');
+    expect(pseudoMoves(board, idx(5, 6), 'shuffle')).toEqual([idx(4, 6)]);
+    put(board, idx(4, 6), 'red', 'P');
+    expect(pseudoMoves(board, idx(4, 6), 'shuffle')).toEqual([idx(3, 6), idx(4, 5), idx(4, 7)]);
+  });
+});
 
 describe('洗子', () => {
   it('帅/将明置原位,其余 15 子全暗', () => {

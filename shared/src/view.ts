@@ -1,15 +1,17 @@
-import type { Board, PublicCell } from './types';
+import type { Board, GameMode, PublicCell } from './types';
 
-/** 服务端棋盘 → 公开视角(暗子只有 side,没有身份) */
-export function publicView(board: Board): PublicCell[] {
-  return board.map((p) =>
-    p ? (p.revealed ? { side: p.side, revealed: true, type: p.trueType } : { side: p.side, revealed: false }) : null,
-  );
+/** 服务端棋盘 → 公开视角。乱阵暗子不发送阵营和身份。 */
+export function publicView(board: Board, mode: GameMode = 'classic'): PublicCell[] {
+  return board.map((p) => {
+    if (!p) return null;
+    if (p.revealed) return { side: p.side, revealed: true, type: p.trueType };
+    return mode === 'shuffle' ? { revealed: false } : { side: p.side, revealed: false };
+  });
 }
 
-/** 公开视角 → 引擎棋盘(暗子 trueType 用占位符,引擎保证暗子永不读 trueType) */
+/** 公开视角 → 引擎棋盘。乱阵走法忽略暗子的阵营和兵种占位值。 */
 export function boardFromView(cells: PublicCell[]): Board {
   return cells.map((c) =>
-    c ? (c.revealed ? { side: c.side, trueType: c.type, revealed: true } : { side: c.side, trueType: 'K' as const, revealed: false }) : null,
+    c ? (c.revealed ? { side: c.side, trueType: c.type, revealed: true } : { side: c.side ?? 'red', trueType: 'K', revealed: false }) : null,
   );
 }

@@ -1,15 +1,15 @@
 import { randomInt } from '@jieqi/shared';
-import type { TimeOpts } from '@jieqi/shared';
+import type { GameMode, TimeOpts } from '@jieqi/shared';
 import { Room } from './room';
 
 const rooms = new Map<string, Room>();
 
-export function createRoom(opts: TimeOpts): Room {
+export function createRoom(opts: TimeOpts, mode?: GameMode): Room {
   for (;;) {
     let code = '';
     for (let i = 0; i < 6; i++) code += String(randomInt(10)); // 6 位数字房号
     if (!rooms.has(code)) {
-      const r = new Room(code, opts);
+      const r = new Room(code, opts, mode);
       rooms.set(code, r);
       return r;
     }

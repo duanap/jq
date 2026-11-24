@@ -1,5 +1,5 @@
-import { colOf, crossedRiver, idx, inPalace, onBoard, other, ownHalf, posTypeOf, rowOf } from './board';
-import type { Board, Side } from './types';
+import { colOf, crossedRiver, idx, inPalace, onBoard, other, ownHalf, playingSide, posTypeOf, rowOf } from './board';
+import type { Board, GameMode, Side } from './types';
 import { DIAG1, KNIGHT, ORTHO } from './moves';
 
 export function findKing(board: Board, side: Side): number {
@@ -14,11 +14,11 @@ export function findKing(board: Board, side: Side): number {
 }
 
 /** 该格棋子的攻击范围(吃子意义上的攻击;炮隔一子打,空格不算) */
-export function attacksFrom(board: Board, from: number): number[] {
+export function attacksFrom(board: Board, from: number, mode: GameMode = 'classic'): number[] {
   const p = board[from]!;
   const type = p.revealed ? p.trueType : posTypeOf(from);
   const dark = !p.revealed;
-  const side = p.side;
+  const side = playingSide(p, from, mode);
   const r0 = rowOf(from);
   const c0 = colOf(from);
   const out: number[] = [];
@@ -61,7 +61,7 @@ export function attacksFrom(board: Board, from: number): number[] {
       const r = r0 + dr, c = c0 + dc;
       if (!onBoard(r, c)) continue;
       if (board[idx(r0 + dr / 2, c0 + dc / 2)]) continue;
-      if (dark && !ownHalf(idx(r, c), side)) continue;
+      if (dark && mode === 'classic' && !ownHalf(idx(r, c), side)) continue;
       add(r, c);
     }
   } else if (type === 'A') {
@@ -100,13 +100,13 @@ export function kingsFacing(board: Board): boolean {
   return true;
 }
 
-export function inCheck(board: Board, side: Side): boolean {
+export function inCheck(board: Board, side: Side, mode: GameMode = 'classic', movingTo?: number): boolean {
   const k = findKing(board, side);
   if (k < 0) return false;
   const by = other(side);
   for (let i = 0; i < 90; i++) {
     const p = board[i];
-    if (p && p.side === by && attacksFrom(board, i).includes(k)) return true;
+    if (i !== movingTo && p && playingSide(p, i, mode) === by && attacksFrom(board, i, mode).includes(k)) return true;
   }
   return false;
 }

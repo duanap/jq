@@ -1,4 +1,4 @@
-import type { GameResult, PieceType, PublicCell, Side } from './types';
+import type { GameMode, GameResult, PieceType, PublicCell, Side } from './types';
 
 export interface TimeOpts {
   /** 每方基础时长(分钟),<=0 表示不限时 */
@@ -14,8 +14,15 @@ export interface Clocks {
   red: number;
   black: number;
 }
+export interface CapturedPiece {
+  type: PieceType | null;
+  /** 乱阵中阵营不一定与吃子方相反，所以明确发送真实阵营。 */
+  side?: Side;
+}
 
 export interface GameState {
+  /** 旧版服务端未提供该字段时视为经典揭棋。 */
+  mode?: GameMode;
   phase: 'waiting' | 'playing' | 'over';
   seats: { red: SeatInfo | null; black: SeatInfo | null };
   cells: PublicCell[];
@@ -29,20 +36,21 @@ export interface GameState {
   /**
    * 吃子清单(按接收者视角生成):
    * mine = 我吃到的(可见真实身份);theirs = 对方吃到的我的子,
-   * 其中对方吃掉的暗子对我是保密的(type 为 null,前端显示遮罩背面)。
+   * 经典模式中对方吃掉的暗子对我是保密的(type 为 null)，乱阵中双方可见。
    */
-  captured: { mine: { type: PieceType | null }[]; theirs: { type: PieceType | null }[] };
+  captured: { mine: CapturedPiece[]; theirs: CapturedPiece[] };
   /** 房主(唯一可解散)所在一方 */
   owner: Side;
   /** 待处理的悔棋请求方 */
   pendingUndo?: Side;
+  undoable?: boolean;
   drawOffer?: Side;
   rematch: { red: boolean; black: boolean };
   result?: GameResult;
 }
 
 export type ClientMsg =
-  | { t: 'create'; nick: string; opts?: TimeOpts }
+  | { t: 'create'; nick: string; opts?: TimeOpts; mode?: GameMode }
   | { t: 'join'; room: string; nick?: string; token?: string }
   | { t: 'move'; from: number; to: number }
   | { t: 'resign' }

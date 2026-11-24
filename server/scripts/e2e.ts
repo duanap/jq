@@ -324,6 +324,43 @@ async function main() {
     players.black.close();
   }
 
+  console.log('— 乱阵揭棋 / 同侧吃暗子 —');
+  const shuffledRed = await Client.connect();
+  shuffledRed.send({ t: 'create', nick: '乱阵红方', mode: 'shuffle' });
+  const shuffledRoom = (await shuffledRed.next((m) => m.t === 'joined')) as Extract<ServerMsg, { t: 'joined' }>;
+  const shuffledBlue = await Client.connect();
+  shuffledBlue.send({ t: 'join', room: shuffledRoom.room, nick: '乱阵蓝方' });
+  const blueJoin = (await shuffledBlue.next((m) => m.t === 'joined')) as Extract<ServerMsg, { t: 'joined' }>;
+  ok(shuffledRoom.state.mode === 'shuffle' && blueJoin.state.mode === 'shuffle', '双方加入同一玩法');
+  const hiddenCells = blueJoin.state.cells.filter((cell) => cell?.revealed === false);
+  ok(hiddenCells.length === 30 && hiddenCells.every((cell) => JSON.stringify(cell) === '{"revealed":false}'), '未翻开的阵营和兵种均保密');
+  shuffledRed.send({ t: 'move', from: 0, to: 1 });
+  const wrongSide = await shuffledRed.next((m) => m.t === 'error');
+  ok(wrongSide.t === 'error' && wrongSide.code === 'illegal_move', '红方不能操控蓝侧开局暗子');
+  shuffledRed.send({ t: 'move', from: 81, to: 82 });
+  const captureState = (m: ServerMsg) => m.t === 'state' && m.state.moveNum === 1;
+  const redCapture = (await shuffledRed.next(captureState)) as Extract<ServerMsg, { t: 'state' }>;
+  const blueCapture = (await shuffledBlue.next(captureState)) as Extract<ServerMsg, { t: 'state' }>;
+  const captured = redCapture.state.captured.mine[0];
+  ok(redCapture.state.cells[82]?.revealed === true && redCapture.state.turn === 'black', '红方车位暗子吃同侧马位并翻开');
+  ok(!!captured?.type && !!captured.side && JSON.stringify(captured) === JSON.stringify(blueCapture.state.captured.theirs[0]), '双方看到被吃暗子的真实阵营和兵种');
+  shuffledRed.send({ t: 'undo_request' });
+  const revealUndo = await shuffledRed.next((m) => m.t === 'error');
+  ok(revealUndo.t === 'error' && revealUndo.code === 'no_undo_reveal', '已公开身份的暗子不能悔回');
+  shuffledBlue.send({ t: 'resign' });
+  await shuffledRed.next((m) => m.t === 'state' && m.state.phase === 'over');
+  shuffledRed.send({ t: 'rematch' });
+  await shuffledBlue.next((m) => m.t === 'state' && m.state.rematch.red);
+  shuffledBlue.send({ t: 'rematch' });
+  const shuffledAgain = (await shuffledBlue.next((m) => m.t === 'state' && m.you === 'red' && m.state.phase === 'playing' && m.state.moveNum === 0)) as Extract<ServerMsg, { t: 'state' }>;
+  ok(shuffledAgain.you === 'red' && shuffledAgain.state.mode === 'shuffle' && shuffledAgain.state.captured.mine.length === 0
+    && shuffledAgain.state.cells.filter((cell) => cell?.revealed === false && cell.side === undefined).length === 30, '再来一局保留乱阵玩法，换先并重新隐藏 30 枚暗子');
+  shuffledBlue.send({ t: 'move', from: 81, to: 82 });
+  const newFirstMove = await shuffledBlue.next((m) => m.t === 'state' && m.you === 'red' && m.state.phase === 'playing' && m.state.moveNum === 1) as Extract<ServerMsg, { t: 'state' }>;
+  ok(newFirstMove.you === 'red' && newFirstMove.state.turn === 'black', '换先后原蓝方能执红先行');
+  shuffledRed.send({ t: 'dissolve' });
+  await shuffledBlue.next((m) => m.t === 'closed');
+
   console.log('— 房主解散 / 权限校验 —');
   u1.send({ t: 'dissolve' });
   const cl1 = (await u1.next((m) => m.t === 'closed')) as Extract<ServerMsg, { t: 'closed' }>;

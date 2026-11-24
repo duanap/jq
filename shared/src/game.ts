@@ -1,16 +1,17 @@
-import { other, posTypeOf } from './board';
+import { other, playingSide } from './board';
 import { pseudoMoves } from './moves';
 import { inCheck, kingsFacing } from './check';
-import { shuffleBoard } from './shuffle';
-import type { Board, GameResult, PieceType, PlyRecord, Side } from './types';
+import { shuffleBoard, shuffleMixedBoard } from './shuffle';
+import type { Board, Cell, GameMode, GameResult, PieceType, PlyRecord, Side } from './types';
 
 export interface AppliedMove {
   by: Side;
   from: number;
   to: number;
   capture: boolean;
-  /** 被吃子的身份(仅吃子方可见) */
+  /** 被吃子的真实身份，客户端可见性由房间根据玩法决定。 */
   capturedType?: PieceType;
+  capturedSide?: Side;
   /** 被吃子被吃时是否为暗面 */
   capturedWasDark?: boolean;
   reveal?: PieceType;
@@ -18,17 +19,22 @@ export interface AppliedMove {
   result?: GameResult;
 }
 
-/** 合法走法 = 伪合法 − 走后被将/帅将照面;不允许吃将(将死即终局) */
-export function legalTargets(board: Board, side: Side, from: number): number[] {
+export function canControl(piece: Cell, from: number, side: Side, mode: GameMode = 'classic'): boolean {
+  return playingSide(piece, from, mode) === side;
+}
+
+/** 合法走法按行动前已公开的身份判定，暗子翻开结果不能作为试探走法的依据。 */
+export function legalTargets(board: Board, side: Side, from: number, mode: GameMode = 'classic'): number[] {
   const p = board[from];
-  if (!p || p.side !== side) return [];
+  if (!p || !canControl(p, from, side, mode)) return [];
   const out: number[] = [];
-  for (const to of pseudoMoves(board, from)) {
+  for (const to of pseudoMoves(board, from, mode)) {
     const dst = board[to];
-    if (dst && dst.side !== side && (dst.revealed ? dst.trueType : posTypeOf(to)) === 'K') continue;
+    if (dst?.revealed && dst.trueType === 'K') continue;
     board[to] = p;
     board[from] = null;
-    const bad = inCheck(board, side) || kingsFacing(board);
+    // 暗子临时放到落点后只作为挡子，不能根据落点或未揭开的身份试探将军。
+    const bad = inCheck(board, side, mode, to) || kingsFacing(board);
     board[from] = p;
     board[to] = dst ?? null;
     if (!bad) out.push(to);
@@ -36,10 +42,9 @@ export function legalTargets(board: Board, side: Side, from: number): number[] {
   return out;
 }
 
-export function hasAnyLegalMove(board: Board, side: Side): boolean {
+export function hasAnyLegalMove(board: Board, side: Side, mode: GameMode = 'classic'): boolean {
   for (let i = 0; i < 90; i++) {
-    const p = board[i];
-    if (p && p.side === side && legalTargets(board, side, i).length > 0) return true;
+    if (legalTargets(board, side, i, mode).length > 0) return true;
   }
   return false;
 }
@@ -75,8 +80,8 @@ export class JieqiGame {
   history: (PlyRecord & { key: string })[] = [];
   private counts = new Map<string, number>();
 
-  constructor(board?: Board) {
-    this.board = board ?? shuffleBoard();
+  constructor(board?: Board, readonly mode: GameMode = 'classic') {
+    this.board = board ?? (mode === 'shuffle' ? shuffleMixedBoard() : shuffleBoard());
     this.bump(posKey(this.board, this.turn));
   }
 
@@ -85,19 +90,20 @@ export class JieqiGame {
   }
 
   legalTargets(from: number): number[] {
-    return legalTargets(this.board, this.turn, from);
+    return legalTargets(this.board, this.turn, from, this.mode);
   }
 
   applyMove(from: number, to: number): AppliedMove | null {
     if (this.status !== 'playing') return null;
     const p = this.board[from];
-    if (!p || p.side !== this.turn) return null;
-    if (!legalTargets(this.board, this.turn, from).includes(to)) return null;
+    if (!p || !this.legalTargets(from).includes(to)) return null;
+    const by = this.turn;
 
     const reveal = p.revealed ? undefined : p.trueType;
     const dst = this.board[to];
     const capture = !!dst;
     const capturedType = dst?.trueType;
+    const capturedSide = dst?.side;
     const capturedWasDark = dst ? !dst.revealed : undefined;
     const prevNoCapture = this.noCapturePlies;
     this.board[to] = p;
@@ -108,15 +114,15 @@ export class JieqiGame {
     this.noCapturePlies = capture ? 0 : this.noCapturePlies + 1;
     this.turn = other(this.turn);
 
-    const check = inCheck(this.board, this.turn);
+    const check = inCheck(this.board, this.turn, this.mode);
     const key = posKey(this.board, this.turn);
     this.bump(key);
-    const rec = { by: p.side, from, to, capture, capturedType, capturedWasDark, reveal, check, prevNoCapture, key };
+    const rec = { by, from, to, capture, capturedType, capturedSide, capturedWasDark, reveal, check, prevNoCapture, key };
     this.history.push(rec);
 
     let result: GameResult | undefined;
-    if (!hasAnyLegalMove(this.board, this.turn)) {
-      result = { reason: check ? 'mate' : 'stalemate', winner: p.side };
+    if (!hasAnyLegalMove(this.board, this.turn, this.mode)) {
+      result = { reason: check ? 'mate' : 'stalemate', winner: by };
     } else if (this.noCapturePlies >= NO_CAPTURE_LIMIT) {
       result = { reason: 'no_capture', winner: null };
     } else if ((this.counts.get(key) ?? 0) >= 3) {
@@ -126,15 +132,15 @@ export class JieqiGame {
       this.status = 'over';
       this.result = result;
     }
-    return { by: rec.by, from, to, capture, capturedType, capturedWasDark, reveal, check, result };
+    return { by, from, to, capture, capturedType, capturedSide, capturedWasDark, reveal, check, result };
   }
 
   /**
    * 悔棋:撤销最后一着(仅对局中)。
-   * 揭棋约定:自己翻开过的身份不回收;被吃恢复的子按被吃时的明暗恢复(吃子方已知身份属其记忆,盘面不泄露)。
+   * 经典模式的已翻棋子保持明面，被吃子按原明暗恢复。乱阵公开暗子身份的一着不能撤销。
    */
   undoLast(): boolean {
-    if (this.status !== 'playing') return false;
+    if (!this.canUndoLast()) return false;
     const last = this.history.pop();
     if (!last) return false;
     const mover = this.board[last.to]!;
@@ -142,7 +148,7 @@ export class JieqiGame {
     this.board[last.to] = null;
     if (last.capturedType) {
       this.board[last.to] = {
-        side: other(last.by),
+        side: last.capturedSide ?? other(last.by),
         trueType: last.capturedType,
         revealed: !last.capturedWasDark,
       };
@@ -154,6 +160,11 @@ export class JieqiGame {
     if (c <= 1) this.counts.delete(last.key);
     else this.counts.set(last.key, c - 1);
     return true;
+  }
+
+  canUndoLast(): boolean {
+    const last = this.history[this.history.length - 1];
+    return this.status === 'playing' && !!last && (this.mode === 'classic' || (!last.reveal && !last.capturedWasDark));
   }
 }
 
